@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project board
+    url: https://github.com/orgs/simracecenter/projects/1
+    about: Track planned/in-progress work before filing a new issue.
+  - name: Security vulnerability
+    url: https://github.com/simracecenter/simulator-mcp-servers/security/advisories/new
+    about: Please report vulnerabilities privately — see SECURITY.md, not a public issue.
