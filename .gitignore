@@ -19,3 +19,16 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor swap/backup files
+*.swp
+*~
+
+# Scratch folder for drafting prompts — never commit its contents, but keep the
+# folder itself present via .gitkeep.
+prompt-tmp/*
+!prompt-tmp/.gitkeep

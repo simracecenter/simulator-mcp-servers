@@ -1,0 +1,25 @@
+[package]
+name = "launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Singleton launcher: CLI + tray UI for the simulator-mcp-servers, one active sim at a time (ADR 0001 D2/D3/D4)."
+
+[[bin]]
+name = "simracecenter-launcher"
+path = "src/main.rs"
+
+[dependencies]
+mcp-core = { path = "../mcp-core" }
+iracing-mcp = { path = "../iracing-mcp" }
+clap = { version = "4.5", features = ["derive"] }
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+native-windows-gui = "1.0"
+native-windows-derive = "1.0"
+winapi = { version = "0.3", features = ["synchapi", "handleapi", "errhandlingapi", "winerror", "winnt"] }
