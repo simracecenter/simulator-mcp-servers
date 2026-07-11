@@ -27,3 +27,8 @@ Thumbs.db
 # Editor swap/backup files
 *.swp
 *~
+
+# Scratch folder for drafting prompts — never commit its contents, but keep the
+# folder itself present via .gitkeep.
+prompt-tmp/*
+!prompt-tmp/.gitkeep
