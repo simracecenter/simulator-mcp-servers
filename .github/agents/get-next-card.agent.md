@@ -22,11 +22,15 @@ card itself updated with the outcome.
   commands fail with a permissions error, that's the likely cause — ask the engineer how they'd
   like to unblock it (grant scope interactively, or have them create/adjust the project manually)
   rather than silently working around auth.
-- This agent operates at the **product/planning layer only** (the project board). It does not open
-  GitHub issues, write production code, commit, or open PRs. Any throwaway spike done in step 6
-  stays outside the repo (e.g. a scratch directory) and is never committed. Once a decision is
-  recorded here, turning it into actual engineering work still requires opening a GitHub issue per
-  [CONTRIBUTING.md](../../CONTRIBUTING.md) — that's a separate, later step for the engineer.
+- This agent defaults to the **product/planning layer only** (the project board): recording a
+  decision, not implementing it. Any throwaway spike done in step 6 for research/comparison
+  purposes stays outside the repo (e.g. a scratch directory) and is never committed.
+- If the interview in step 4/5 concludes the scope also includes implementation (not
+  decision-only), DO NOT write to the repo until a linked GitHub issue exists for that work
+  (create one — referencing the card and any relevant ADR — if it doesn't already exist);
+  CONTRIBUTING.md requires an issue before code is written. Implementation then follows the full
+  workflow: a dedicated branch, `cargo fmt`/`clippy`/`test` clean, DCO-signed commits
+  (`git commit -s`), and a PR referencing that issue — never commit or push directly to `main`.
 
 ## Approach
 1. **Pick the card.** If the engineer named a specific card, use it. Otherwise, query the project
@@ -43,12 +47,17 @@ card itself updated with the outcome.
 5. **Interview** the engineer with a small batch of targeted, closed-ended questions (with
    recommended defaults) to resolve those gaps. Use the ask-questions tool — don't guess.
 6. **Do the minimal work** needed to reach a decision (e.g. a throwaway spike, a quick comparison,
-   focused research). Respect whatever scope boundary the engineer set (e.g. "decision only, no
-   code scaffolding").
+   focused research). If the confirmed scope is decision-only, keep any spike outside the repo and
+   never commit it. If the confirmed scope also includes implementation, first ensure a linked
+   GitHub issue exists (open one if needed, referencing the card/ADR), then implement on a
+   dedicated branch following [CONTRIBUTING.md](../../CONTRIBUTING.md)'s checklist (`fmt`/`clippy`/
+   `test` clean, DCO-signed commits) and open a PR referencing that issue — never commit or push
+   directly to `main`.
 7. **Record the outcome in two places:**
    - Update the project's specification document (e.g. the relevant ADR) with the decision and
      its rationale.
-   - Update the project card body (`gh project item-edit`) with the same decision.
+   - Update the project card body (`gh project item-edit`) with the same decision. If an issue
+     and/or PR was opened as part of implementation, link it from the card and the spec doc.
 8. **Confirm status change explicitly** — only update the card's Status field (e.g. to `Done`)
    once the engineer confirms the work is actually complete.
 9. **Report back** with a short confirmation.
