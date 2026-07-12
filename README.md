@@ -1,5 +1,12 @@
 # Sim RaceCenter — Simulator MCP Servers
 
+<p align="center">
+  <img src="docs/assets/logo_black.png" alt="Sim RaceCenter logo" width="120">
+</p>
+
+[![Build status](https://img.shields.io/github/actions/workflow/status/simracecenter/simulator-mcp-servers/ci.yml?branch=main)](https://github.com/simracecenter/simulator-mcp-servers/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/simracecenter/simulator-mcp-servers?color=FF5F1F)](LICENSE)
+
 **Data-driven precision for cinematic race broadcasts.**
 
 Sim RaceCenter's Broadcast Agent orchestrates live sim-racing broadcasts: it interrogates session
