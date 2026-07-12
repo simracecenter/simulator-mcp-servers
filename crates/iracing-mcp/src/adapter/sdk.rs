@@ -20,7 +20,7 @@ use tracing::debug;
 use iracing_broadcast::{BroadcastMessage, Client as BroadcastClient};
 
 #[cfg(windows)]
-use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr::null_mut, slice};
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt, slice};
 
 #[cfg(windows)]
 use winapi::{
@@ -691,7 +691,7 @@ impl IracingAdapter for SdkAdapter {
             .and_then(|v| v.as_sequence())
             .map(|pos| {
                 pos.iter()
-                    .filter_map(|p| {
+                    .map(|p| {
                         let str_f = |k: &str| -> String {
                             p.get(k)
                                 .and_then(|v| v.as_str().map(String::from))
@@ -702,7 +702,7 @@ impl IracingAdapter for SdkAdapter {
                         };
                         let f_f =
                             |k: &str| -> f64 { p.get(k).and_then(|v| v.as_f64()).unwrap_or(-1.0) };
-                        Some(SessionPosition {
+                        SessionPosition {
                             position: i_f("Position"),
                             class_position: i_f("ClassPosition"),
                             car_idx: i_f("CarIdx"),
@@ -713,7 +713,7 @@ impl IracingAdapter for SdkAdapter {
                             last_time: f_f("LastTime"),
                             incidents: i_f("Incidents"),
                             reason_out: str_f("ReasonOut"),
-                        })
+                        }
                     })
                     .collect()
             })
@@ -1158,11 +1158,7 @@ fn send_broadcast_message_3(
     var2: i32,
     var3: i32,
 ) -> Result<(), AdapterError> {
-    send_broadcast_message_2(
-        message,
-        var1,
-        ((var2 & 0xFFFF) | ((var3 & 0xFFFF) << 16)) as i32,
-    )
+    send_broadcast_message_2(message, var1, (var2 & 0xFFFF) | ((var3 & 0xFFFF) << 16))
 }
 
 #[cfg(windows)]
@@ -1257,7 +1253,7 @@ fn read_session_yaml() -> Result<String, AdapterError> {
 unsafe fn read_session_yaml_from_view(
     view: *mut std::ffi::c_void,
 ) -> Result<(i32, String), AdapterError> {
-    if view == null_mut() {
+    if view.is_null() {
         return Err(AdapterError::NotConnected(
             "shared-memory view pointer was null".to_string(),
         ));
