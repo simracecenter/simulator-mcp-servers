@@ -74,7 +74,9 @@ If the card calls for implementation work (not decision-only), create a GitHub i
 ### Step 7 — Report back
 Provide a short summary: which card was worked, what was decided, where it was recorded
 (ADR link + card link + issue link if created), and the card's current status. If the Status field
-has not been changed, say so explicitly and ask the engineer whether it should be updated.
+has not been changed, say so explicitly and ask before proceeding. If a GitHub issue was created,
+state clearly that the next step is planning (pointing at the **Issue Planner** agent) — this
+agent does not plan implementation details itself.
 
 ## Output Format
 One short paragraph or bullet list:
@@ -82,3 +84,4 @@ One short paragraph or bullet list:
 - Decisions recorded (ADR link, card link)
 - Issue created (link) or "no issue required"
 - Current card status and whether any status change is still pending
+- Next step: hand off to **Issue Planner** (if an issue was created)

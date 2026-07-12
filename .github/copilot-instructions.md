@@ -28,11 +28,28 @@ This repo defines specialized custom agents for recurring developer workflows �
 before starting work that matches one of their purposes, rather than improvising the same multi-step
 process from scratch.
 
-Current agents:
-- **Get Next Card** (`.github/agents/get-next-card.agent.md`) — works a GitHub Project (v2) card
-  end-to-end: picks the next actionable card (or a named one), explains it, interviews the engineer
-  to resolve gaps, does the minimal work to reach a decision, and records the outcome in both the
-  relevant ADR and the project card itself.
+Feature and bug work flows through three agents in sequence, each handing off to the next via
+GitHub (a project card, then an issue, then a PR) rather than via conversation context:
+
+```mermaid
+flowchart LR
+    A[Project card] -->|Get Next Card| B[GitHub issue]
+    B -->|Issue Planner| C["Issue + Implementation Plan"]
+    C -->|Implement Issue| D[Branch + PR]
+```
+
+- **Get Next Card** (`.github/agents/get-next-card.agent.md`) — refines a GitHub Project (v2) card
+  into a recorded decision: picks the next actionable card (or a named one), explains it,
+  interviews the engineer to resolve gaps, records the decision in the relevant ADR and the card
+  itself, and opens a linked GitHub issue if the card requires implementation.
+- **Issue Planner** (`.github/agents/issue-planner.agent.md`) — turns a GitHub issue into a
+  concrete, file-by-file implementation plan: reads the issue, interviews the engineer to close
+  gaps, validates that acceptance criteria are concrete and testable, and records the plan as an
+  `## Implementation Plan` section on the issue. Writes no code.
+- **Implement Issue** (`.github/agents/implement-issue.agent.md`) — executes an issue's recorded
+  implementation plan: creates a dedicated branch, implements it, runs `fmt`/`clippy`/`test`,
+  commits with DCO sign-off, pushes, and opens a PR referencing the issue. Expects a plan to
+  already exist (via Issue Planner) — stops and asks for one if it's missing.
 
 ## Improving agents
 
