@@ -180,7 +180,25 @@ linked to GitHub issues).
       [Project card](https://github.com/orgs/simracecenter/projects/1/views/2?pane=issue&itemId=210617424)
       (status: Done)
 - [ ] Follow-up task: port iracing-mcp's adapter/tool code into `crates/iracing-mcp` and extract
-      shared pieces into `mcp-core` (D5).
+      shared pieces into `mcp-core` (D5). **Migration plan decided 2026-07-12 — see project card
+      for the full breakdown. Key decisions:**
+      - Source: `margic/iracing-mcp` @ `main`; all dependencies are on crates.io
+        (`iracing = "0.4.1"`, `iracing-broadcast = "0.1.0"`, `serde_yaml = "0.8"`,
+        `winapi = "0.3"` under `[target.'cfg(windows)'.dependencies]`).
+      - `adapter/sdk_live.rs` → `crates/iracing-mcp/src/adapter/sdk.rs` (drop older `sdk.rs`).
+      - `adapter/stub.rs` → `crates/iracing-mcp/src/adapter/stub.rs`.
+      - `adapter/mod.rs` (trait + domain types) → `crates/iracing-mcp/src/adapter/mod.rs`.
+      - `mcp/mod.rs` (tool dispatch + verification loop) → `crates/iracing-mcp/src/handler.rs`
+        (replaces stub), adapted to implement `mcp_core::McpHandler`.
+      - `crates/mcp-core/src/transport/http.rs` needs `POST /mcp` route + `GET /healthz`
+        (currently only serves `POST /`).
+      - `crates/launcher/src/runner.rs` needs to wire `Arc<IracingMcpHandler>` to the
+        configured transport.
+      - Three upstream test files port to `crates/iracing-mcp/tests/` (`http_transport.rs`,
+        `verification_regressions.rs`, `live_mcp_suite.rs` — last one kept `#[ignore]`).
+      - Done when: `cargo test -p iracing-mcp` passes on Linux, `cargo build --target
+        x86_64-pc-windows-gnu -p iracing-mcp` compiles, `tools/list` returns the real
+        14-tool set, clippy clean.
       [Project card](https://github.com/orgs/simracecenter/projects/1/views/2?pane=issue&itemId=210617431)
 - [ ] Confirm GPL-3.0 compatibility with any vendored iRacing SDK reference material before it's
       added to this repo (D7).
