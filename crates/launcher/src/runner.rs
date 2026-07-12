@@ -14,7 +14,8 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match sim {
         Sim::Iracing => {
-            let handler = Arc::new(iracing_mcp::IracingMcpHandler);
+            let adapter = Arc::new(iracing_mcp::adapter::SdkAdapter);
+            let handler = Arc::new(iracing_mcp::IracingMcpHandler::new(adapter));
             match transport {
                 TransportKind::Stdio => mcp_core::transport::stdio::run_stdio(handler).await?,
                 TransportKind::Http => mcp_core::transport::http::run_http(bind, handler).await?,
