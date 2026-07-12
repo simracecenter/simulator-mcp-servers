@@ -1,11 +1,13 @@
 //! iRacing MCP server.
 //!
-//! **Status:** skeleton only. The real `IracingAdapter`/`SdkAdapter`/
-//! `StubAdapter` port from `margic/iracing-mcp`, plus its tool set, is
-//! tracked as its own follow-up (ADR 0001 D5 — see the "Port iracing-mcp
-//! adapter/tool code into crates/iracing-mcp" project card). This crate
-//! exists so the workspace shape matches ADR 0001 D1 ahead of that work.
+//! Ports the `IracingAdapter`/`SdkAdapter`/`StubAdapter` and full tool set
+//! from `margic/iracing-mcp` (ADR 0001 D5 — see the "Port iracing-mcp
+//! adapter/tool code into crates/iracing-mcp" project card). [`IracingMcpHandler`]
+//! implements [`mcp_core::McpHandler`], holding `Arc<dyn adapter::IracingAdapter>`
+//! as internal state; production code (`crates/launcher/src/runner.rs`)
+//! constructs it with [`adapter::SdkAdapter`], tests use [`adapter::StubAdapter`].
 
+pub mod adapter;
 pub mod handler;
 
 pub use handler::IracingMcpHandler;

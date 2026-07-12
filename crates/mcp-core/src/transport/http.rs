@@ -1,19 +1,38 @@
 use std::sync::Arc;
 
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
+use serde_json::{json, Value};
 
 use crate::jsonrpc::{JsonRpcRequest, JsonRpcResponse, McpHandler};
 
-/// Serves a single `POST /` JSON-RPC endpoint backed by `handler`.
+/// Builds the `POST /mcp` + `GET /healthz` router backed by `handler`.
+///
+/// Exposed separately from [`run_http`] so tests and other transports can
+/// exercise the router directly (e.g. via `tower::ServiceExt::oneshot`)
+/// without binding a real TCP listener.
+pub fn build_router<H: McpHandler>(handler: Arc<H>) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/mcp", post(handle_request::<H>))
+        .with_state(handler)
+}
+
+/// Serves `POST /mcp` (JSON-RPC) and `GET /healthz` backed by `handler`.
 pub async fn run_http<H: McpHandler>(bind: &str, handler: Arc<H>) -> std::io::Result<()> {
-    let app = Router::new()
-        .route("/", post(handle_request::<H>))
-        .with_state(handler);
+    let app = build_router(handler);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     axum::serve(listener, app)
         .await
         .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+async fn healthz() -> Json<Value> {
+    Json(json!({ "ok": true }))
 }
 
 async fn handle_request<H: McpHandler>(
