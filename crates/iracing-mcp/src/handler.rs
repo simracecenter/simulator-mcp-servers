@@ -915,7 +915,7 @@ impl IracingMcpHandler {
         }
 
         let started_at = Instant::now();
-        let deadline = started_at + Duration::from_millis(args.timeout_ms.max(1));
+        let step_timeout = Duration::from_millis(args.timeout_ms.max(1));
         let mut steps: Vec<Value> = Vec::new();
 
         if args.speed != 0 {
@@ -924,6 +924,7 @@ impl IracingMcpHandler {
             }
 
             let mut paused = false;
+            let deadline = Instant::now() + step_timeout;
             while Instant::now() < deadline {
                 match self.adapter.get_replay_state().await {
                     Ok(current) => {
@@ -967,12 +968,13 @@ impl IracingMcpHandler {
 
         let mut seek_verified = false;
         let mut seek_observed = before.clone();
+        let deadline = Instant::now() + step_timeout;
         while Instant::now() < deadline {
             match self.adapter.get_replay_state().await {
                 Ok(current) => {
                     let observed_time_ms = (current.replay_session_time * 1000.0).round() as i32;
                     if current.replay_session_num == args.session_num
-                        && (observed_time_ms - args.start_time_ms).abs() <= 100
+                        && (observed_time_ms - args.start_time_ms).abs() <= 300
                     {
                         seek_verified = true;
                         seek_observed = current;
@@ -1001,6 +1003,7 @@ impl IracingMcpHandler {
 
         let mut focus_verified = false;
         let mut focus_observed = seek_observed.clone();
+        let deadline = Instant::now() + step_timeout;
         while Instant::now() < deadline {
             match self.adapter.get_replay_state().await {
                 Ok(current) => {
@@ -1028,6 +1031,7 @@ impl IracingMcpHandler {
 
         let mut playback_verified = false;
         let mut playback_observed = focus_observed.clone();
+        let deadline = Instant::now() + step_timeout;
         while Instant::now() < deadline {
             match self.adapter.get_replay_state().await {
                 Ok(current) => {
@@ -1058,6 +1062,7 @@ impl IracingMcpHandler {
         if let Some(end_time_ms) = args.end_time_ms {
             let mut reached_end = args.speed == 0;
             let mut end_observed = playback_observed.clone();
+            let deadline = Instant::now() + step_timeout;
             while Instant::now() < deadline {
                 match self.adapter.get_replay_state().await {
                     Ok(current) => {
@@ -1082,6 +1087,7 @@ impl IracingMcpHandler {
 
             let mut paused_verified = false;
             let mut pause_observed = end_observed;
+            let deadline = Instant::now() + step_timeout;
             while Instant::now() < deadline {
                 match self.adapter.get_replay_state().await {
                     Ok(current) => {
