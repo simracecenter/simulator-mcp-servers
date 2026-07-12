@@ -56,6 +56,13 @@ const BROADCAST_REPLAY_SET_PLAY_POSITION: i32 = 4;
 const BROADCAST_REPLAY_SEARCH: i32 = 5;
 #[cfg(windows)]
 const BROADCAST_REPLAY_SEARCH_SESSION_TIME: i32 = 12;
+#[cfg(windows)]
+/// Bit 0 (`irsdk_stConnected`) of `IrsdkHeaderPrefix::status`. iRacing's
+/// background `iRacingService` keeps the shared-memory mapping open (with the
+/// last-known telemetry frozen) even after the sim itself has fully exited,
+/// so successfully opening/mapping the file is not sufficient to detect a
+/// live connection - this bit must be checked too.
+const IRSDK_STATUS_CONNECTED: i32 = 1;
 
 #[cfg(windows)]
 #[repr(C)]
@@ -192,6 +199,7 @@ impl SdkAdapter {
 #[cfg(windows)]
 impl SdkAdapter {
     fn session_data_sync(&self) -> Result<SessionData, AdapterError> {
+        ensure_sim_connected()?;
         let connection = iracing::Connection::new()
             .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
         let telemetry = connection
@@ -204,6 +212,7 @@ impl SdkAdapter {
     }
 
     fn replay_state_sync(&self) -> Result<ReplayState, AdapterError> {
+        ensure_sim_connected()?;
         let connection = iracing::Connection::new()
             .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
         let sample = connection
@@ -241,8 +250,7 @@ impl SdkAdapter {
             return Err(AdapterError::UnsupportedReplaySpeed(speed));
         }
 
-        iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        ensure_sim_connected()?;
 
         debug!(
             "set_replay_playback: sending ReplaySetPlaySpeed speed={} slow_motion={}",
@@ -270,8 +278,7 @@ impl SdkAdapter {
             ));
         }
 
-        iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        ensure_sim_connected()?;
 
         let session_time = session_time_ms as u32;
         let time_lo = (session_time & 0xFFFF) as i32;
@@ -295,8 +302,7 @@ impl SdkAdapter {
         mode: ReplaySeekFrameMode,
         frame: i32,
     ) -> Result<(), AdapterError> {
-        iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        ensure_sim_connected()?;
 
         let mode_code = match mode {
             ReplaySeekFrameMode::Begin => 0,
@@ -313,8 +319,7 @@ impl SdkAdapter {
     }
 
     fn replay_search_event_sync(&self, mode: ReplaySearchMode) -> Result<(), AdapterError> {
-        iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        ensure_sim_connected()?;
 
         let mode_code = match mode {
             ReplaySearchMode::ToStart => 0,
@@ -344,8 +349,7 @@ impl SdkAdapter {
             ));
         }
 
-        iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        ensure_sim_connected()?;
 
         debug!(
             "camera_set_state: sending CamSetState state_bits={}",
@@ -1205,6 +1209,44 @@ fn wide_string(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
+/// Opens the SDK shared-memory mapping just to check the header's `status`
+/// bit, without reading session YAML or telemetry. Used as a fail-fast guard
+/// by tools that talk to the SDK via the `iracing`/`iracing-broadcast` crates,
+/// neither of which checks this bit themselves.
+fn ensure_sim_connected() -> Result<(), AdapterError> {
+    let path = wide_string(IRSDK_MEMMAPFILENAME);
+
+    unsafe {
+        let mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, path.as_ptr());
+        if mapping.is_null() {
+            return Err(AdapterError::NotConnected(
+                std::io::Error::from_raw_os_error(GetLastError() as i32).to_string(),
+            ));
+        }
+
+        let view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+        if view.is_null() {
+            let error = std::io::Error::from_raw_os_error(GetLastError() as i32).to_string();
+            CloseHandle(mapping);
+            return Err(AdapterError::NotConnected(error));
+        }
+
+        let status = (*(view as *const IrsdkHeaderPrefix)).status;
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+
+        if status & IRSDK_STATUS_CONNECTED == 0 {
+            return Err(AdapterError::NotConnected(
+                "iRacing SDK shared memory is mapped but reports the simulator is not connected"
+                    .to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
 fn read_session_yaml() -> Result<String, AdapterError> {
     let path = wide_string(IRSDK_MEMMAPFILENAME);
 
@@ -1260,6 +1302,13 @@ unsafe fn read_session_yaml_from_view(
     }
 
     let header = &*(view as *const IrsdkHeaderPrefix);
+    if header.status & IRSDK_STATUS_CONNECTED == 0 {
+        return Err(AdapterError::NotConnected(
+            "iRacing SDK shared memory is mapped but reports the simulator is not connected"
+                .to_string(),
+        ));
+    }
+
     let start = (view as usize + header.session_info_offset as usize) as *const u8;
     let bytes = slice::from_raw_parts(start, header.session_info_len as usize);
 
