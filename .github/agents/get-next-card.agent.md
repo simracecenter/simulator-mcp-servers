@@ -18,9 +18,11 @@ card itself updated with the outcome.
 - DO NOT change a card's Status field (e.g. to Done) without the engineer explicitly confirming it.
 - ONLY use the `gh` CLI (`gh project ...`, `gh api graphql ...`) for GitHub Projects data —
   never fabricate item IDs, database IDs, or card URLs; always look them up.
-- Note: this environment's `GITHUB_TOKEN` env var may lack the `project` scope. If `gh project`
-  commands fail with a permissions error, that's the likely cause — ask the engineer how they'd
-  like to unblock it (grant scope interactively, or have them create/adjust the project manually)
+- Note: the default Codespaces `GITHUB_TOKEN` is repo-scoped and cannot reach org-level Project v2
+  APIs, even for org owners. This repo's `.devcontainer/post-create.sh` wires a `GH_PROJECTS_TOKEN`
+  Codespaces secret (if configured) into `GH_TOKEN` for `gh` to use instead. If `gh project`
+  commands still fail with a permissions error, that's the likely cause — ask the engineer to
+  confirm `GH_PROJECTS_TOKEN` is set as a Codespaces secret and the codespace has been rebuilt,
   rather than silently working around auth.
 - This agent defaults to the **product/planning layer only** (the project board): recording a
   decision, not implementing it. Any throwaway spike done in step 6 for research/comparison
