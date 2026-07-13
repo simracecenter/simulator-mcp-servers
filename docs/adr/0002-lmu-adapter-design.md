@@ -170,18 +170,23 @@ actually starts.
 - [ ] Pin a specific plugin version — **deferred/lower priority**, only relevant if the
       shared-memory path is revived later for data the REST API doesn't cover (e.g. tire/FFB
       telemetry at telemetry-rate, not yet confirmed available over REST).
-- [ ] **New (Amendment):** confirm write semantics of `/rest/watch/focus` (PUT/POST, payload
-      shape, verifiable effect) — only GETs have been tested against the live instance so far, to
-      avoid mutating a real running session without explicit permission.
+- [x] ~~confirm write semantics of `/rest/watch/focus` (PUT/POST, payload shape, verifiable
+      effect)~~ — **resolved, see [Follow-up (2026-07-13)](#follow-up-2026-07-13-full-openapi-spec-found-reads-wired-up-camera-type-control-added)**:
+      `PUT /rest/watch/focus/{slotId}` confirmed (car focus) and `PUT
+      /rest/watch/focus/{cameraType}/{trackSideGroup}/false` confirmed (camera type), both verified
+      live and now implemented.
 - [ ] **New (Amendment):** explore the `127.0.0.1:6398` endpoint (HTTP 426 Upgrade Required on
       every path tried) — likely a WebSocket push feed for live telemetry/standings, which could
       replace polling entirely for read-heavy tools.
 - [ ] **New (Amendment):** confirm whether the REST API's port (6397/6398) is stable/configurable
       across LMU versions/installs, and whether it's available unconditionally or only once a
       session is loaded, before `lmu-mcp` depends on it unconditionally.
-- [ ] **New (Amendment):** determine whether the REST API alone can satisfy `get_weather`/
-      `get_pit_info`/`pit_menu_command`/`set_weather`, or whether some of those still need the
-      shared-memory plugin (or have no REST equivalent at all).
+- [x] ~~determine whether the REST API alone can satisfy `get_weather`/`get_pit_info`/
+      `pit_menu_command`/`set_weather`~~ — **partially resolved**: `get_weather`/`get_pit_info` are
+      now wired to confirmed endpoints (`sessionInfo`/`GetGameState`/`standings`).
+      `pit_menu_command`/`set_weather` remain open — candidate write endpoints exist in the OpenAPI
+      spec but their request-body shape is undocumented and untested; see the
+      [2026-07-13 Follow-up](#follow-up-2026-07-13-full-openapi-spec-found-reads-wired-up-camera-type-control-added).
 
 ## Amendment (2026-07-13): live verification reveals a REST API — pivoting away from shared-memory-only
 
@@ -289,3 +294,48 @@ Only `camera_focus` has a confirmed working command. Other commands (`set_weathe
 `pit_menu_command`) haven't been tested — their payload shape is unlikely to be a single scalar
 path parameter like focus, so the same convention shouldn't be assumed without testing each one.
 The `:6398` endpoint, port stability, and full read coverage (weather/pit info) also remain open.
+
+### Follow-up (2026-07-13): full OpenAPI spec found; reads wired up; camera-type control added
+
+The REST API serves its own full OpenAPI spec at **`/swagger-schema.json`** (the Swagger UI at
+`/swagger/index.html` is real, but its default spec path `/swagger/v1/swagger.json` 404s — the UI's
+`swagger-initializer.js` points to the actual non-default path). This ~140-endpoint spec is
+authoritative and revealed far more than manual endpoint-guessing had found, though it has no
+request/response body schemas (auto-generated without doc annotations).
+
+**Confirmed live (read-only, session/track identity + weather + pit info)** — resolving several
+"not yet implemented" gaps from the initial pivot:
+- `GET /rest/watch/sessionInfo` — track/session identity (`trackName`, `session`), temps, elapsed/
+  end time, `darkCloud` (cloudiness, matches the old rF2 `mDarkCloud` concept exactly).
+- `GET /rest/sessions/GetGameState` — game phase, `PitState`, `isReplayActive`,
+  `inControlOfVehicle`, and a `closeestWeatherNode` (sic) giving rain chance/wind speed.
+- `GET /rest/watch/standings`'s existing per-car entries also carry `pitstops`/`penalties`, reused
+  for `get_pit_info`'s counts rather than adding a new fetch.
+
+`get_session_data`, `get_weekend_info`, `get_weather`, and `get_pit_info` are now wired to these —
+no longer `not_yet_implemented`.
+
+**Confirmed live (camera-type control, with explicit permission during an offline practice
+session)** — `PUT /rest/watch/focus/{cameraType}/{trackSideGroup}/{shouldAdvance}` works and maps
+exactly onto the classic rF2/ISI `mCameraType` enum (`1`=cockpit → `"COCKPIT"`, `2`=nosecam →
+`"NOSECAM"`, `3`=swingman → `"SWINGMAN"`, `4`/`5`=trackside variants → a group name containing
+`"Trackside"`, though the exact camera within that group isn't deterministic call-to-call).
+`camera_focus` now accepts optional `cameraType`/`trackSideGroup` and verifies whichever of
+car-focus/camera-type was actually requested — mirroring `iracing-mcp`'s `camera_focus` exactly.
+
+**Tested, but not confirmable (deprioritized, not implemented)**:
+- `POST /rest/replay/toggleactive` flips `GET /rest/replay/isActive`, but had no other observable
+  effect (`sessionInfo.currentEventTime` kept climbing at real-time rate regardless).
+- `PUT /rest/watch/replaytime/{time}` and `PUT /rest/watch/replayCommand/play|pause` returned `200`
+  but showed no confirmable seek/playback effect from the live-monitor context.
+- `GET /rest/watch/play/{id}` (load a recorded replay file — one exists: `"Fuji Speedway P1 1"`)
+  **errored**: `"Unable to process the request when not in SETUP state"` — a real API-level
+  rejection, not reachable from the current context without more investigation into how to reach a
+  "SETUP" state via the API.
+- `POST /rest/replay/CameraController/setCamera`, `POST /rest/garage/PitMenu/loadPitMenu`, and the
+  weather-write endpoints (`POST /rest/sessions/weather/{session}/{node}/{setting}` and
+  `.../{preset}`) have no visible request-body schema in the spec and weren't guessed at blind.
+
+This reinforces the working principle from this investigation: **prefer confirmable, verifiable
+commands** (clear before/after effect via a `GET`) over ones that merely return `200` — a `200`
+response alone isn't evidence a command actually did anything.

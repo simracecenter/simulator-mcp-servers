@@ -18,11 +18,20 @@
 //!
 //! - **Confirmed live** (2026-07-13): `GET /rest/watch/standings` (roster/
 //!   standings/relatives source), `GET`/`PUT /rest/watch/focus[/{slotId}]`
-//!   (camera focus, read + verified write).
-//! - **Not confirmed / no known endpoint**: session/track identity (`GET
-//!   /rest/sessions` only exposes rule settings, not track/session name),
-//!   weather, pit info, weather/pit commands, replay seeking. These return
-//!   [`AdapterError::NotYetImplemented`] rather than being guessed at.
+//!   (camera focus, read + verified write), `GET /rest/watch/sessionInfo`
+//!   (track/session identity, temps, elapsed/end time), `GET
+//!   /rest/sessions/GetGameState` (game phase, pit state, replay/in-car
+//!   flags, nearest weather node), `GET
+//!   /rest/replay/CameraController/getCameraInfo` + `PUT
+//!   /rest/watch/focus/{cameraType}/{trackSideGroup}/false` (camera
+//!   type/track-side-group switching, discovered via the full OpenAPI spec
+//!   at `/swagger-schema.json`).
+//! - **Not confirmed / no known endpoint, or tested-but-inconclusive**:
+//!   weather/pit *commands*, replay seeking (`PUT
+//!   /rest/watch/replaytime/{time}` exists per the spec but live-testing
+//!   showed no observable effect from the current live-monitor context —
+//!   see the ADR Amendment). These return [`AdapterError::NotYetImplemented`]
+//!   or [`AdapterError::NotSupported`] rather than being guessed at.
 //! - The REST API's port (6397) is hardcoded below — **not confirmed
 //!   stable/configurable across LMU installs or versions**; see the ADR's
 //!   Amendment open follow-ups.
@@ -31,9 +40,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::{
-    AdapterError, HwControlCommand, LmuAdapter, PitInfoState, RelativeEntry, Relatives, Roster,
-    RosterEntry, SessionData, SessionOverview, Standings, StandingsEntry, WeatherControl,
-    WeatherState, WeekendInfo,
+    AdapterError, CameraFocusState, HwControlCommand, LmuAdapter, PitInfoState, RelativeEntry,
+    Relatives, Roster, RosterEntry, SessionData, SessionOverview, Standings, StandingsEntry,
+    WeatherControl, WeatherState, WeekendInfo,
 };
 
 /// LMU's local REST API base URL. Loopback-only, confirmed live
@@ -66,7 +75,66 @@ struct RestCarEntry {
     /// e.g. `"FSTAT_NONE"` — see [`humanize_finish_status`].
     finish_status: String,
     player: bool,
-    in_garage_stall: bool,
+    pitstops: i32,
+    penalties: i32,
+}
+
+/// `GET /rest/watch/sessionInfo`'s response — confirmed live 2026-07-13
+/// (track: Fuji Speedway, session: PRACTICE1). Only the fields this adapter
+/// actually uses are modeled; the real response has more.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestSessionInfo {
+    track_name: String,
+    session: String,
+    ambient_temp: f64,
+    track_temp: f64,
+    current_event_time: f64,
+    end_event_time: f64,
+    /// LMU reports `u32::MAX` when there's no lap limit (e.g. a timed
+    /// practice session) — see [`SdkAdapter::normalize_max_laps`].
+    maximum_laps: u32,
+    number_of_vehicles: i32,
+    /// `0.0` (clear) to `1.0` (overcast) — matches the old rF2 `mDarkCloud`
+    /// concept exactly ("cloud darkness? 0.0-1.0").
+    dark_cloud: f64,
+}
+
+/// `GET /rest/sessions/GetGameState`'s response — confirmed live 2026-07-13.
+/// Note `PitState` and `closeestWeatherNode` (sic, real API typo) don't
+/// follow the API's usual camelCase convention, hence explicit renames.
+#[derive(Debug, Clone, Deserialize)]
+struct RestGameState {
+    #[serde(rename = "gamePhase")]
+    game_phase: String,
+    #[serde(rename = "PitState")]
+    pit_state: String,
+    #[serde(rename = "isReplayActive")]
+    is_replay_active: bool,
+    #[serde(rename = "inControlOfVehicle")]
+    in_control_of_vehicle: bool,
+    #[serde(rename = "closeestWeatherNode")]
+    closeest_weather_node: RestWeatherNode,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RestWeatherNode {
+    #[serde(rename = "RainChance")]
+    rain_chance: f64,
+    /// Unit unconfirmed — passed through as-is by `get_weather` rather than
+    /// assuming m/s (see this crate's module doc comment / ADR 0002
+    /// Amendment's open follow-ups).
+    #[serde(rename = "WindSpeed")]
+    wind_speed: f64,
+}
+
+/// `GET /rest/replay/CameraController/getCameraInfo`'s response — confirmed
+/// live 2026-07-13: `{"cameraName":"COCKPIT","currentCameraGroup":"Driving"}`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestCameraInfo {
+    camera_name: String,
+    current_camera_group: String,
 }
 
 fn sector_to_index(sector: &str) -> i32 {
@@ -143,6 +211,25 @@ impl SdkAdapter {
         self.get_json("/rest/watch/standings").await
     }
 
+    async fn fetch_session_info(&self) -> Result<RestSessionInfo, AdapterError> {
+        self.get_json("/rest/watch/sessionInfo").await
+    }
+
+    async fn fetch_game_state(&self) -> Result<RestGameState, AdapterError> {
+        self.get_json("/rest/sessions/GetGameState").await
+    }
+
+    /// LMU reports `u32::MAX` for "no lap limit" (confirmed live in a timed
+    /// practice session) — map that to `0`, matching `StubAdapter`'s existing
+    /// "no limit" convention rather than overflowing an `i32`.
+    fn normalize_max_laps(maximum_laps: u32) -> i32 {
+        if maximum_laps >= i32::MAX as u32 {
+            0
+        } else {
+            maximum_laps as i32
+        }
+    }
+
     fn not_yet_implemented(name: &'static str) -> AdapterError {
         AdapterError::NotYetImplemented(name)
     }
@@ -151,27 +238,18 @@ impl SdkAdapter {
 #[async_trait]
 impl LmuAdapter for SdkAdapter {
     async fn get_session_overview(&self) -> SessionOverview {
-        match self.fetch_standings().await {
-            Ok(entries) => {
-                let is_in_car = entries
-                    .iter()
-                    .find(|entry| entry.player)
-                    .map(|entry| !entry.in_garage_stall)
-                    .unwrap_or(false);
-                SessionOverview {
-                    connected: true,
-                    // Unconfirmed via REST — no endpoint found exposing
-                    // replay-mode state yet; see ADR 0002 Amendment.
-                    is_replay: false,
-                    is_in_car,
-                    // Unconfirmed via REST — `/rest/sessions` only exposes
-                    // rule settings (`SESSSET_*`), not track/session
-                    // identity. Not guessed at; see ADR 0002 Amendment.
-                    session_name: "unknown (not yet mapped over LMU's REST API)".to_string(),
-                    track_name: "unknown (not yet mapped over LMU's REST API)".to_string(),
-                }
-            }
-            Err(_) => SessionOverview {
+        match (
+            self.fetch_session_info().await,
+            self.fetch_game_state().await,
+        ) {
+            (Ok(info), Ok(game_state)) => SessionOverview {
+                connected: true,
+                is_replay: game_state.is_replay_active,
+                is_in_car: game_state.in_control_of_vehicle,
+                session_name: info.session,
+                track_name: info.track_name,
+            },
+            _ => SessionOverview {
                 connected: false,
                 is_replay: false,
                 is_in_car: false,
@@ -182,11 +260,31 @@ impl LmuAdapter for SdkAdapter {
     }
 
     async fn get_session_data(&self) -> Result<SessionData, AdapterError> {
-        Err(Self::not_yet_implemented("get_session_data"))
+        let info = self.fetch_session_info().await?;
+        let game_state = self.fetch_game_state().await?;
+        Ok(SessionData {
+            track_name: info.track_name,
+            session_type: info.session,
+            game_phase: game_state.game_phase,
+            current_et_sec: info.current_event_time,
+            end_et_sec: info.end_event_time,
+            max_laps: Self::normalize_max_laps(info.maximum_laps),
+            driver_count: info.number_of_vehicles.max(0) as usize,
+        })
     }
 
     async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError> {
-        Err(Self::not_yet_implemented("get_weekend_info"))
+        let info = self.fetch_session_info().await?;
+        let game_state = self.fetch_game_state().await?;
+        Ok(WeekendInfo {
+            track_name: info.track_name,
+            session_type: info.session,
+            max_laps: Self::normalize_max_laps(info.maximum_laps),
+            end_et_sec: info.end_event_time,
+            ambient_temp_c: info.ambient_temp,
+            track_temp_c: info.track_temp,
+            raining: (game_state.closeest_weather_node.rain_chance / 100.0).clamp(0.0, 1.0),
+        })
     }
 
     async fn get_roster(&self, _include_spectators: bool) -> Result<Roster, AdapterError> {
@@ -250,15 +348,40 @@ impl LmuAdapter for SdkAdapter {
     }
 
     async fn get_weather(&self) -> Result<WeatherState, AdapterError> {
-        Err(Self::not_yet_implemented("get_weather"))
+        let info = self.fetch_session_info().await?;
+        let game_state = self.fetch_game_state().await?;
+        let node = game_state.closeest_weather_node;
+        Ok(WeatherState {
+            ambient_temp_c: info.ambient_temp,
+            track_temp_c: info.track_temp,
+            raining: (node.rain_chance / 100.0).clamp(0.0, 1.0),
+            cloudiness: info.dark_cloud.clamp(0.0, 1.0),
+            wind_speed_ms: node.wind_speed,
+        })
     }
 
     async fn get_pit_info(&self) -> Result<PitInfoState, AdapterError> {
-        Err(Self::not_yet_implemented("get_pit_info"))
+        let entries = self.fetch_standings().await?;
+        let game_state = self.fetch_game_state().await?;
+        let player = entries.iter().find(|entry| entry.player);
+        Ok(PitInfoState {
+            in_pits: player.map(|entry| entry.pitting).unwrap_or(false),
+            pit_state: game_state.pit_state.to_lowercase(),
+            num_pitstops: player.map(|entry| entry.pitstops).unwrap_or(0),
+            num_penalties: player.map(|entry| entry.penalties).unwrap_or(0),
+        })
     }
 
-    async fn get_camera_focus(&self) -> Result<i32, AdapterError> {
-        self.get_json("/rest/watch/focus").await
+    async fn get_camera_state(&self) -> Result<CameraFocusState, AdapterError> {
+        let focus_slot_id: i32 = self.get_json("/rest/watch/focus").await?;
+        let camera_info: RestCameraInfo = self
+            .get_json("/rest/replay/CameraController/getCameraInfo")
+            .await?;
+        Ok(CameraFocusState {
+            focus_slot_id,
+            camera_name: camera_info.camera_name,
+            camera_group: camera_info.current_camera_group,
+        })
     }
 
     async fn pit_menu_command(&self, _control: HwControlCommand) -> Result<(), AdapterError> {
@@ -270,10 +393,24 @@ impl LmuAdapter for SdkAdapter {
     }
 
     /// Confirmed live 2026-07-13: `PUT /rest/watch/focus/{slotId}` switches
-    /// focus, verified by polling [`Self::get_camera_focus`] (see
+    /// car focus; if `camera_type` is given, also `PUT
+    /// /rest/watch/focus/{cameraType}/{trackSideGroup}/false` switches the
+    /// active camera (`track_side_group` defaults to `0`). Verified by
+    /// polling [`Self::get_camera_state`] (see
     /// `crates/lmu-mcp/src/handler.rs`'s use of `mcp_core::verify::verify_loop`).
-    async fn camera_focus(&self, car_idx: i32) -> Result<(), AdapterError> {
-        self.put(&format!("/rest/watch/focus/{car_idx}")).await
+    async fn camera_focus(
+        &self,
+        car_idx: i32,
+        camera_type: Option<i32>,
+        track_side_group: Option<i32>,
+    ) -> Result<(), AdapterError> {
+        self.put(&format!("/rest/watch/focus/{car_idx}")).await?;
+        if let Some(camera_type) = camera_type {
+            let group = track_side_group.unwrap_or(0);
+            self.put(&format!("/rest/watch/focus/{camera_type}/{group}/false"))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn replay_seek_session_time(&self, _session_time_ms: i32) -> Result<(), AdapterError> {

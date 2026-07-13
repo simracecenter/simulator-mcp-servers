@@ -141,6 +141,52 @@ pub struct PitInfoState {
     pub num_penalties: i32,
 }
 
+/// Live camera state — combines the car-focus slot id (`GET
+/// /rest/watch/focus`) with the active camera name/group (`GET
+/// /rest/replay/CameraController/getCameraInfo`), both confirmed live
+/// 2026-07-13 (ADR 0002 Amendment). Backs `camera_focus`'s send-then-poll
+/// verification — it checks whichever of car/camera-type were actually
+/// requested, mirroring `iracing-mcp`'s `camera_focus`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraFocusState {
+    pub focus_slot_id: i32,
+    pub camera_name: String,
+    pub camera_group: String,
+}
+
+/// Whether `current` reflects the requested `car_idx`/`camera_type`, per
+/// `camera_focus`'s send-then-poll verification. Mirrors `iracing-mcp`'s
+/// `camera_focus`: verifies whichever of car/camera-type were actually
+/// requested.
+///
+/// `camera_type` verification confirmed live 2026-07-13: `1`/`2`/`3`
+/// (cockpit/nosecam/swingman) reliably produce an exact, stable
+/// `camera_name` (`"COCKPIT"`/`"NOSECAM"`/`"SWINGMAN"`); `4`/`5` (trackside
+/// variants) reliably land in a group whose name contains `"Trackside"`
+/// (observed both `"Trackside"` and `"TracksideCycle"` for the *same*
+/// request, so the exact camera picked isn't deterministic — only the
+/// group family is). `0` ("TV cockpit" per the classic rF2 enum) is
+/// untested; treated like `1` as a best-effort guess.
+pub fn camera_focus_verified(
+    current: &CameraFocusState,
+    car_idx: i32,
+    camera_type: Option<i32>,
+) -> bool {
+    let car_ok = current.focus_slot_id == car_idx;
+    let camera_ok = match camera_type {
+        Some(0) | Some(1) => current.camera_name.eq_ignore_ascii_case("COCKPIT"),
+        Some(2) => current.camera_name.eq_ignore_ascii_case("NOSECAM"),
+        Some(3) => current.camera_name.eq_ignore_ascii_case("SWINGMAN"),
+        Some(_) => current
+            .camera_group
+            .to_ascii_lowercase()
+            .contains("trackside"),
+        None => true,
+    };
+    car_ok && camera_ok
+}
+
 /// A single `rF2HWControl` write. `control_name`/`value` are deliberately
 /// generic (ADR 0002 D3: "exact fields are deferred to implementation") —
 /// the specific control names this maps to are only confirmed by the
@@ -202,18 +248,28 @@ pub trait LmuAdapter: Send + Sync {
     async fn get_relatives(&self) -> Result<Relatives, AdapterError>;
     async fn get_weather(&self) -> Result<WeatherState, AdapterError>;
     async fn get_pit_info(&self) -> Result<PitInfoState, AdapterError>;
-    /// Current camera-focus slot id, per `GET /rest/watch/focus`. Backs
-    /// `camera_focus`'s send-then-poll verification (mirrors how
-    /// `iracing-mcp` uses `replay_get_state` for its camera/replay tools).
-    async fn get_camera_focus(&self) -> Result<i32, AdapterError>;
+    /// Current focus/camera state — see [`CameraFocusState`]. Backs
+    /// `camera_focus`'s send-then-poll verification.
+    async fn get_camera_state(&self) -> Result<CameraFocusState, AdapterError>;
 
     // Command path — HTTP writes, verified via the read path above.
     async fn pit_menu_command(&self, control: HwControlCommand) -> Result<(), AdapterError>;
     async fn set_weather(&self, weather: WeatherControl) -> Result<(), AdapterError>;
 
-    /// Confirmed working live via `PUT /rest/watch/focus/{slotId}` (ADR 0002
-    /// Amendment) — no longer `NotSupported`.
-    async fn camera_focus(&self, car_idx: i32) -> Result<(), AdapterError>;
+    /// Confirmed working live (ADR 0002 Amendment). Switches focus to
+    /// `car_idx` (`PUT /rest/watch/focus/{car_idx}`) and, if `camera_type`
+    /// is given, also switches the active camera type/track-side group
+    /// (`PUT /rest/watch/focus/{cameraType}/{trackSideGroup}/false`,
+    /// `track_side_group` defaults to `0` when omitted). `camera_type`
+    /// values follow the classic rF2/ISI `mCameraType` enum, confirmed live:
+    /// `1`=cockpit, `2`=nosecam, `3`=swingman, `4`/`5`=trackside variants
+    /// (`0`="TV cockpit" is untested).
+    async fn camera_focus(
+        &self,
+        car_idx: i32,
+        camera_type: Option<i32>,
+        track_side_group: Option<i32>,
+    ) -> Result<(), AdapterError>;
 
     /// Unconfirmed — no known LMU API (REST or shared-memory) supports
     /// replay seeking; both implementations return

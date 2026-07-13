@@ -157,7 +157,7 @@ async fn http_mcp_camera_focus_verifies() {
     let data = mcp_call("camera_focus", json!({ "carIdx": 1 })).await;
     assert_eq!(data["ok"], Value::Bool(true));
     assert_eq!(data["data"]["verified"], Value::Bool(true));
-    assert_eq!(data["data"]["observed"], json!(1));
+    assert_eq!(data["data"]["observed"]["focusSlotId"], json!(1));
 }
 
 #[tokio::test]

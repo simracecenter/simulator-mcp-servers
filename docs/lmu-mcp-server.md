@@ -29,6 +29,15 @@ The shared-memory plugin path is deprioritized, not deleted from the historical 
 gap needs data the REST API doesn't expose (see [Known limitations](#known-limitations)), it may be
 revisited, but shouldn't be assumed necessary.
 
+> **The full API surface is documented at `http://localhost:6397/swagger/index.html`** (its actual
+> spec is served from `/swagger-schema.json`, not the Swashbuckle default `/swagger/v1/swagger.json`).
+> This ~140-endpoint spec (discovered 2026-07-13) is how `get_session_data`/`get_weekend_info`/
+> `get_weather`/`get_pit_info`/camera-type switching below were confirmed, rather than guessed at.
+> It has no request/response body schemas (auto-generated without doc annotations), so mutating
+> endpoints still need live confirmation before trusting them — see
+> [ADR 0002's Amendment](adr/0002-lmu-adapter-design.md#amendment-2026-07-13-live-verification-reveals-a-rest-api-pivot-away-from-shared-memory-only)
+> for exactly what's been confirmed vs. only found-in-the-spec-but-untested.
+
 ## Tool reference
 
 All tools are namespaced flat (no simulator prefix) and returned by `tools/list`. Arguments use
@@ -42,28 +51,28 @@ discovering gaps via a `not_supported`/`not_yet_implemented` error.
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `get_session_overview` | *(none)* | Connectivity + mode: `connected`, `isReplay`, `isInCar`, `sessionName`, `trackName`. Never errors — reports `connected: false` instead. `sessionName`/`trackName`/`isReplay` are currently placeholders (unconfirmed over REST — see Known limitations). |
-| `get_session_data` | *(none)* | **Not yet implemented** — no confirmed REST endpoint for track/session identity yet. |
-| `get_weekend_info` | *(none)* | **Not yet implemented** — same gap as `get_session_data`. |
+| `get_session_overview` | *(none)* | Connectivity + mode: `connected`, `isReplay`, `isInCar`, `sessionName`, `trackName` — all real, confirmed live via `GET /rest/watch/sessionInfo` + `GET /rest/sessions/GetGameState`. Never errors — reports `connected: false` instead. |
+| `get_session_data` | *(none)* | Track name, session type, game phase, elapsed/end time, driver count — from `GET /rest/watch/sessionInfo` + `GET /rest/sessions/GetGameState`. |
+| `get_weekend_info` | *(none)* | Static event/track/weather metadata for the current weekend — same sources as `get_session_data`, plus `sessionInfo.darkCloud`/`GetGameState`'s nearest weather node. |
 | `get_roster` | `includeSpectators?` (bool, currently a no-op) | Drivers/cars/classes currently in the session, from `GET /rest/watch/standings`. |
 | `get_standings` | `sessionNum?` (int, currently ignored — no session filter found on the endpoint) | Current standings/timing per driver, from `GET /rest/watch/standings`. |
 | `get_relatives` | *(none)* | Live field-order/gap view, derived from the same `GET /rest/watch/standings` response. |
-| `get_weather` | *(none)* | **Not yet implemented** — no confirmed REST endpoint for weather yet. |
-| `get_pit_info` | *(none)* | **Not yet implemented** — no confirmed REST endpoint for pit info yet. |
+| `get_weather` | *(none)* | Current weather: ambient/track temp (`sessionInfo`), rain chance and wind speed (`GetGameState`'s nearest weather node), cloudiness (`sessionInfo.darkCloud`). Wind-speed unit is unconfirmed — passed through as reported. |
+| `get_pit_info` | *(none)* | Pit state for the player's car — `pitState` from `GetGameState`, `inPits`/pitstop/penalty counts from the player's own `GET /rest/watch/standings` entry. |
 
 ### Command tools
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
-| `camera_focus` | `carIdx` (int, required), `timeoutMs?` (int, default `1000`) | **Confirmed working live (2026-07-13).** Sends `PUT /rest/watch/focus/{carIdx}` and verifies via `GET /rest/watch/focus`, the same send-then-poll shape `iracing-mcp` uses. |
-| `pit_menu_command` | `controlName` (string, required), `value` (number, required), `timeoutMs?` (int) | **Not yet implemented** — no confirmed REST endpoint for pit-menu commands yet. |
-| `set_weather` | `raining` (number 0..1, required), `cloudiness?`, `ambientTempC?` (number), `tolerance?`, `timeoutMs?` (int) | **Not yet implemented** — no confirmed REST endpoint for weather commands yet. |
+| `camera_focus` | `carIdx` (int, required), `cameraType?` (int), `trackSideGroup?` (int), `timeoutMs?` (int, default `1000`) | **Confirmed working live (2026-07-13).** Sends `PUT /rest/watch/focus/{carIdx}` and, if `cameraType` is given, also `PUT /rest/watch/focus/{cameraType}/{trackSideGroup}/false` (`trackSideGroup` defaults to `0`). Verifies whichever was requested via `GET /rest/watch/focus` + `GET /rest/replay/CameraController/getCameraInfo`. `cameraType` follows the classic rF2/ISI enum: `1`=cockpit, `2`=nosecam, `3`=swingman, `4`/`5`=trackside variants (exact camera within a trackside group isn't deterministic — only the group is verified for those). |
+| `pit_menu_command` | `controlName` (string, required), `value` (number, required), `timeoutMs?` (int) | **Not yet implemented** — the spec has a `POST /rest/garage/PitMenu/loadPitMenu` candidate, but its request body shape is undocumented and untested. |
+| `set_weather` | `raining` (number 0..1, required), `cloudiness?`, `ambientTempC?` (number), `tolerance?`, `timeoutMs?` (int) | **Not yet implemented** — the spec has `POST /rest/sessions/weather/{session}/{node}/{setting}` and `.../{preset}` candidates, but body/semantics are untested. |
 
 ### Not-yet-supported tools
 
 | Tool | Arguments | Why |
 | --- | --- | --- |
-| `replay_seek_session_time` | `sessionTimeMs` (int, required) | No known LMU API (REST or shared-memory) supports replay seeking — LMU's REST surface looks built for *live directing*, not *replay production*. Tracked in issue #9; don't build assumption of this working into a Broadcast Agent's LMU flows. |
+| `replay_seek_session_time` | `sessionTimeMs` (int, required) | A `PUT /rest/watch/replaytime/{time}` endpoint exists in the spec, but live-testing found no observable seek effect from the current live-monitor context (`currentEventTime` kept climbing at real-time rate regardless). Loading a saved replay file (`GET /rest/watch/play/{id}`) — which might be the missing prerequisite — errored `"not in SETUP state"` from this context. Tracked in issue #9; don't build assumption of this working into a Broadcast Agent's LMU flows yet. |
 
 ### Capability discovery
 
@@ -105,24 +114,35 @@ implementations exist behind `Arc<dyn LmuAdapter>`:
 
 `camera_focus` reuses [`mcp_core::verify::verify_loop`](../crates/mcp-core/src/verify.rs) — the same
 generic send-poll-verify helper `iracing-mcp`'s replay/camera tools use, promoted into `mcp-core` in
-#8, applied here over HTTP instead of shared memory: `PUT` the command, then poll `GET
-/rest/watch/focus` until it reflects the new value or a timeout elapses.
+#8, applied here over HTTP instead of shared memory: `PUT` the command(s), then poll `GET
+/rest/watch/focus` + `GET /rest/replay/CameraController/getCameraInfo` (combined into one
+[`CameraFocusState`](../crates/lmu-mcp/src/adapter/mod.rs)) until whichever of car-focus/camera-type
+was requested is reflected, or a timeout elapses — mirroring `iracing-mcp`'s `camera_focus`, which
+also "verifies whichever of car/group/camera were actually requested".
 
 ## Known limitations
 
-- **Most read/command tools beyond `get_session_overview`/`get_roster`/`get_standings`/
-  `get_relatives`/`camera_focus` aren't wired to LMU's REST API yet** — no confirmed endpoint was
-  found for session/track identity, weather, or pit info during initial live testing. They return
-  `not_yet_implemented` rather than being guessed at; see
-  [ADR 0002's Amendment](adr/0002-lmu-adapter-design.md#amendment-2026-07-13-live-verification-reveals-a-rest-api-pivot-away-from-shared-memory-only)
-  for what was actually probed.
-- **`get_session_overview`'s `sessionName`/`trackName`/`isReplay` are placeholders** — no REST
-  endpoint exposing track/session identity or replay-mode state has been found yet.
+- **`pit_menu_command`/`set_weather` aren't wired to LMU's REST API yet.** The full OpenAPI spec
+  (`/swagger-schema.json`) has plausible candidates (`POST /rest/garage/PitMenu/loadPitMenu`,
+  `POST /rest/sessions/weather/{session}/{node}/{setting}` and `.../{preset}`), but their request
+  bodies aren't documented in the spec and haven't been live-tested. They return
+  `not_yet_implemented` rather than being guessed at.
+- **`replay_seek_session_time` isn't implemented** — a candidate endpoint exists
+  (`PUT /rest/watch/replaytime/{time}`) but showed no observable effect in live testing from the
+  current live-monitor context; see [Not-yet-supported tools](#not-yet-supported-tools) above and
+  issue #9.
+- **`camera_focus`'s trackside camera verification only checks the camera *group*, not the exact
+  camera.** Live-testing found the exact trackside camera picked for a given `cameraType`/
+  `trackSideGroup` isn't fully deterministic (the same request landed on different camera names
+  across calls) — only that the resulting group name contains `"Trackside"` is a reliable
+  invariant. `cameraType=0` ("TV cockpit" per the classic rF2 enum) is untested and treated as an
+  alias for `1` (cockpit) as a best-effort guess.
 - **The REST API's port (`6397`) is hardcoded and not confirmed stable/configurable** across LMU
   versions or installs.
-- **`replay_seek_session_time` isn't implemented** — see [Not-yet-supported tools](#not-yet-supported-tools)
-  above and issue #9.
 - **A `:6398` endpoint returns HTTP 426 Upgrade Required** on every path tried — likely a WebSocket
   push feed, not yet explored; could replace polling for read-heavy tools if confirmed.
-- **Plugin distribution is not automated.** See [Prerequisite](#prerequisite-install-rf2sharedmemorymapplugin)
-  above — bundling remains an open ADR 0002 follow-up (D4).
+- **Some field units are unconfirmed**, notably `get_weather`'s `windSpeedMs` — passed through as
+  reported by the REST API rather than assuming a specific unit.
+- **Plugin distribution is moot for now** — the shared-memory plugin path is deprioritized (see
+  [Prerequisite](#prerequisite-none--lmus-rest-api-needs-no-plugin-install) above), so bundling it
+  isn't a live concern unless that path is revisited.

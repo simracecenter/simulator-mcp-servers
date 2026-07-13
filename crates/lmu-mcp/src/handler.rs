@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use tokio::time::Duration;
 use tracing::warn;
 
-use crate::adapter::{AdapterError, HwControlCommand, LmuAdapterRef, WeatherControl};
+use crate::adapter::{
+    camera_focus_verified, AdapterError, HwControlCommand, LmuAdapterRef, WeatherControl,
+};
 
 /// Real [`McpHandler`] for LMU, backed by `Arc<dyn LmuAdapter>`.
 ///
@@ -107,6 +109,8 @@ fn default_weather_timeout_ms() -> u64 {
 #[serde(rename_all = "camelCase")]
 struct CameraFocusArgs {
     car_idx: i32,
+    camera_type: Option<i32>,
+    track_side_group: Option<i32>,
     #[serde(default = "default_camera_focus_timeout_ms")]
     timeout_ms: u64,
 }
@@ -203,11 +207,13 @@ fn tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "camera_focus",
-            "description": "Switches LMU's camera focus to a target car (PUT /rest/watch/focus/{slotId}) and verifies it via GET /rest/watch/focus.",
+            "description": "Switches LMU's camera focus to a target car (PUT /rest/watch/focus/{slotId}), optionally also the camera type/track-side group (PUT /rest/watch/focus/{cameraType}/{trackSideGroup}/false; cameraType 1=cockpit, 2=nosecam, 3=swingman, 4/5=trackside), and verifies whichever was requested.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "carIdx": { "type": "integer" },
+                    "cameraType": { "type": "integer" },
+                    "trackSideGroup": { "type": "integer" },
                     "timeoutMs": { "type": "integer" }
                 },
                 "required": ["carIdx"],
@@ -239,26 +245,33 @@ fn tool_descriptors() -> Vec<Value> {
 /// which intentionally implements more than `SdkAdapter` currently does for
 /// testability. Update this whenever an entry's real-world support changes.
 fn capabilities() -> Vec<ToolCapability> {
-    const REST_GAP_REASON: &str =
-        "not yet wired to LMU's REST API (no confirmed endpoint) — see ADR 0002 amendment";
     vec![
         ToolCapability::supported("get_session_overview"),
-        ToolCapability::unsupported("get_session_data", REST_GAP_REASON),
-        ToolCapability::unsupported("get_weekend_info", REST_GAP_REASON),
+        ToolCapability::supported("get_session_data"),
+        ToolCapability::supported("get_weekend_info"),
         ToolCapability::degraded(
             "get_roster",
             "includeSpectators filtering isn't implemented yet over REST — all entries are returned",
         ),
         ToolCapability::supported("get_standings"),
         ToolCapability::supported("get_relatives"),
-        ToolCapability::unsupported("get_weather", REST_GAP_REASON),
-        ToolCapability::unsupported("get_pit_info", REST_GAP_REASON),
-        ToolCapability::unsupported("pit_menu_command", REST_GAP_REASON),
-        ToolCapability::unsupported("set_weather", REST_GAP_REASON),
+        ToolCapability::degraded(
+            "get_weather",
+            "wind speed unit is unconfirmed (passed through as reported by the REST API) — see ADR 0002 amendment",
+        ),
+        ToolCapability::supported("get_pit_info"),
+        ToolCapability::unsupported(
+            "pit_menu_command",
+            "not yet wired to LMU's REST API (no confirmed endpoint) — see ADR 0002 amendment",
+        ),
+        ToolCapability::unsupported(
+            "set_weather",
+            "not yet wired to LMU's REST API (no confirmed endpoint) — see ADR 0002 amendment",
+        ),
         ToolCapability::supported("camera_focus"),
         ToolCapability::unsupported(
             "replay_seek_session_time",
-            "no known LMU API (REST or shared-memory) supports replay seeking — see issue #9",
+            "a replaytime endpoint exists but live-testing showed no observable seek effect from the live-monitor context — see ADR 0002 amendment and issue #9",
         ),
         ToolCapability::supported("get_capabilities"),
     ]
@@ -516,29 +529,34 @@ impl LmuMcpHandler {
         }
     }
 
-    /// Sends `PUT /rest/watch/focus/{slotId}` and verifies it via
-    /// `get_camera_focus` (`GET /rest/watch/focus`) — confirmed working live
-    /// 2026-07-13 (ADR 0002 Amendment), mirroring `iracing-mcp`'s
-    /// send-then-poll `camera_focus`.
+    /// Sends `PUT /rest/watch/focus/{slotId}` and, if `cameraType` was
+    /// requested, also `PUT /rest/watch/focus/{cameraType}/{trackSideGroup}/false`.
+    /// Verifies whichever of car/camera-type were actually requested via
+    /// `get_camera_state` (`GET /rest/watch/focus` +
+    /// `GET /rest/replay/CameraController/getCameraInfo`) — confirmed
+    /// working live 2026-07-13 (ADR 0002 Amendment), mirroring
+    /// `iracing-mcp`'s send-then-poll `camera_focus`.
     async fn camera_focus(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
         let args: CameraFocusArgs = match parse_tool_args(&id, &params, "camera_focus") {
             Ok(args) => args,
             Err(response) => return response,
         };
 
-        let before = match self.adapter.get_camera_focus().await {
+        let before = match self.adapter.get_camera_state().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
 
         let timeout = Duration::from_millis(args.timeout_ms.max(1));
         let target_car_idx = args.car_idx;
+        let target_camera_type = args.camera_type;
 
         let outcome = verify_loop(
             before,
-            self.adapter.camera_focus(args.car_idx),
-            || self.adapter.get_camera_focus(),
-            move |current| *current == target_car_idx,
+            self.adapter
+                .camera_focus(args.car_idx, args.camera_type, args.track_side_group),
+            || self.adapter.get_camera_state(),
+            move |current| camera_focus_verified(current, target_car_idx, target_camera_type),
             timeout,
             Duration::from_millis(50),
         )
@@ -566,8 +584,11 @@ impl LmuMcpHandler {
                 elapsed,
             }) => {
                 let reason = format!(
-                    "Camera focus did not reach carIdx={} within {}ms.",
+                    "Camera focus did not reach carIdx={}{} within {}ms.",
                     args.car_idx,
+                    args.camera_type
+                        .map(|t| format!(", cameraType={t}"))
+                        .unwrap_or_default(),
                     timeout.as_millis()
                 );
                 tool_verification_err(
@@ -811,6 +832,65 @@ mod tests {
         let data = response.result.unwrap()["structuredContent"]["data"].clone();
 
         assert_eq!(data["verified"], Value::Bool(true));
-        assert_eq!(data["observed"], json!(1));
+        assert_eq!(data["observed"]["focusSlotId"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn camera_focus_verifies_camera_type_and_group() {
+        let handler = handler();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::from(1)),
+            method: "tools/call".to_string(),
+            params: json!({
+                "name": "camera_focus",
+                "arguments": { "carIdx": 1, "cameraType": 2 }
+            }),
+        };
+
+        let response = handler.handle(request).await;
+        let data = response.result.unwrap()["structuredContent"]["data"].clone();
+
+        assert_eq!(data["verified"], Value::Bool(true));
+        assert_eq!(data["observed"]["focusSlotId"], json!(1));
+        assert_eq!(
+            data["observed"]["cameraName"],
+            Value::String("NOSECAM".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_session_data_returns_real_fields() {
+        let handler = handler();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::from(1)),
+            method: "tools/call".to_string(),
+            params: json!({ "name": "get_session_data", "arguments": {} }),
+        };
+
+        let response = handler.handle(request).await;
+        let result = response.result.unwrap();
+
+        assert_eq!(result["isError"], Value::Bool(false));
+        assert!(result["structuredContent"]["data"]["trackName"].is_string());
+        assert!(result["structuredContent"]["data"]["gamePhase"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_pit_info_returns_real_fields() {
+        let handler = handler();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::from(1)),
+            method: "tools/call".to_string(),
+            params: json!({ "name": "get_pit_info", "arguments": {} }),
+        };
+
+        let response = handler.handle(request).await;
+        let result = response.result.unwrap();
+
+        assert_eq!(result["isError"], Value::Bool(false));
+        assert!(result["structuredContent"]["data"]["pitState"].is_string());
     }
 }

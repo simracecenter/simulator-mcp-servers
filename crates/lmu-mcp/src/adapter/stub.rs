@@ -6,6 +6,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
+use super::CameraFocusState;
 use super::{
     AdapterError, HwControlCommand, LmuAdapter, PitInfoState, RelativeEntry, Relatives, Roster,
     RosterEntry, SessionData, SessionOverview, Standings, StandingsEntry, WeatherControl,
@@ -26,6 +27,8 @@ struct StubState {
     /// /rest/watch/focus[/{slotId}]` (ADR 0002 Amendment). Defaults to `0`
     /// to match the player's own car in this fixture's roster/standings.
     focus: i32,
+    camera_name: String,
+    camera_group: String,
 }
 
 impl Default for StubState {
@@ -40,6 +43,8 @@ impl Default for StubState {
             ambient_temp_c: 25.0,
             track_temp_c: 32.0,
             focus: 0,
+            camera_name: "COCKPIT".to_string(),
+            camera_group: "Driving".to_string(),
         }
     }
 }
@@ -241,13 +246,35 @@ impl LmuAdapter for StubAdapter {
         Ok(())
     }
 
-    async fn camera_focus(&self, car_idx: i32) -> Result<(), AdapterError> {
-        self.state.lock().expect("not poisoned").focus = car_idx;
+    async fn camera_focus(
+        &self,
+        car_idx: i32,
+        camera_type: Option<i32>,
+        track_side_group: Option<i32>,
+    ) -> Result<(), AdapterError> {
+        let mut state = self.state.lock().expect("not poisoned");
+        state.focus = car_idx;
+        if let Some(camera_type) = camera_type {
+            let _ = track_side_group; // unused in this fixture's simple mapping
+            let (name, group) = match camera_type {
+                0 | 1 => ("COCKPIT", "Driving"),
+                2 => ("NOSECAM", "Driving"),
+                3 => ("SWINGMAN", "Driving"),
+                _ => ("TRACKING000", "Trackside"),
+            };
+            state.camera_name = name.to_string();
+            state.camera_group = group.to_string();
+        }
         Ok(())
     }
 
-    async fn get_camera_focus(&self) -> Result<i32, AdapterError> {
-        Ok(self.state.lock().expect("not poisoned").focus)
+    async fn get_camera_state(&self) -> Result<CameraFocusState, AdapterError> {
+        let state = self.state.lock().expect("not poisoned").clone();
+        Ok(CameraFocusState {
+            focus_slot_id: state.focus,
+            camera_name: state.camera_name,
+            camera_group: state.camera_group,
+        })
     }
 
     async fn replay_seek_session_time(&self, _session_time_ms: i32) -> Result<(), AdapterError> {
