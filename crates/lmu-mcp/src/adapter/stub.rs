@@ -22,6 +22,10 @@ struct StubState {
     cloudiness: f64,
     ambient_temp_c: f64,
     track_temp_c: f64,
+    /// Current camera-focus slot id, mirroring LMU's REST `GET`/`PUT
+    /// /rest/watch/focus[/{slotId}]` (ADR 0002 Amendment). Defaults to `0`
+    /// to match the player's own car in this fixture's roster/standings.
+    focus: i32,
 }
 
 impl Default for StubState {
@@ -35,6 +39,7 @@ impl Default for StubState {
             cloudiness: 0.2,
             ambient_temp_c: 25.0,
             track_temp_c: 32.0,
+            focus: 0,
         }
     }
 }
@@ -236,8 +241,13 @@ impl LmuAdapter for StubAdapter {
         Ok(())
     }
 
-    async fn camera_focus(&self, _car_idx: i32) -> Result<(), AdapterError> {
-        Err(AdapterError::NotSupported("camera_focus"))
+    async fn camera_focus(&self, car_idx: i32) -> Result<(), AdapterError> {
+        self.state.lock().expect("not poisoned").focus = car_idx;
+        Ok(())
+    }
+
+    async fn get_camera_focus(&self) -> Result<i32, AdapterError> {
+        Ok(self.state.lock().expect("not poisoned").focus)
     }
 
     async fn replay_seek_session_time(&self, _session_time_ms: i32) -> Result<(), AdapterError> {

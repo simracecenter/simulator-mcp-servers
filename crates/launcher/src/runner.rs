@@ -22,7 +22,7 @@ pub async fn run(
             }
         }
         Sim::Lmu => {
-            let adapter = Arc::new(lmu_mcp::adapter::SdkAdapter);
+            let adapter = Arc::new(lmu_mcp::adapter::SdkAdapter::default());
             let handler = Arc::new(lmu_mcp::LmuMcpHandler::new(adapter));
             match transport {
                 TransportKind::Stdio => mcp_core::transport::stdio::run_stdio(handler).await?,

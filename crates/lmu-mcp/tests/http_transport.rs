@@ -128,7 +128,7 @@ async fn http_mcp_initialize_and_tools_list_work() {
     let tools = list_json["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 13);
 }
 
 #[tokio::test]
@@ -153,29 +153,16 @@ async fn http_mcp_set_weather_verifies() {
 }
 
 #[tokio::test]
-async fn http_mcp_camera_focus_returns_not_supported() {
-    let app = build_app();
-    let body = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "camera_focus", "arguments": { "carIdx": 0 } }
-    });
-    let res = app
-        .oneshot(
-            Request::builder()
-                .uri("/mcp")
-                .method("POST")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
-    let json: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["result"]["isError"], Value::Bool(true));
-    assert_eq!(
-        json["result"]["structuredContent"]["error"]["code"],
-        Value::String("not_supported".to_string())
-    );
+async fn http_mcp_camera_focus_verifies() {
+    let data = mcp_call("camera_focus", json!({ "carIdx": 1 })).await;
+    assert_eq!(data["ok"], Value::Bool(true));
+    assert_eq!(data["data"]["verified"], Value::Bool(true));
+    assert_eq!(data["data"]["observed"], json!(1));
+}
+
+#[tokio::test]
+async fn http_mcp_get_capabilities_lists_all_tools() {
+    let data = mcp_call("get_capabilities", json!({})).await;
+    assert_eq!(data["ok"], Value::Bool(true));
+    assert_eq!(data["data"].as_array().unwrap().len(), 13);
 }

@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
-use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler};
+use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, ToolCapability};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::Duration;
@@ -107,6 +107,12 @@ fn default_weather_timeout_ms() -> u64 {
 #[serde(rename_all = "camelCase")]
 struct CameraFocusArgs {
     car_idx: i32,
+    #[serde(default = "default_camera_focus_timeout_ms")]
+    timeout_ms: u64,
+}
+
+fn default_camera_focus_timeout_ms() -> u64 {
+    1000
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,17 +203,20 @@ fn tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "camera_focus",
-            "description": "Not supported by the LMU adapter yet (no known rF2 input buffer) — see issue #9.",
+            "description": "Switches LMU's camera focus to a target car (PUT /rest/watch/focus/{slotId}) and verifies it via GET /rest/watch/focus.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "carIdx": { "type": "integer" } },
+                "properties": {
+                    "carIdx": { "type": "integer" },
+                    "timeoutMs": { "type": "integer" }
+                },
                 "required": ["carIdx"],
                 "additionalProperties": false
             }
         }),
         json!({
             "name": "replay_seek_session_time",
-            "description": "Not supported by the LMU adapter yet (no known rF2 input buffer) — see issue #9.",
+            "description": "Not supported by the LMU adapter (no known API supports replay seeking) — see issue #9. Call get_capabilities to check before calling.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "sessionTimeMs": { "type": "integer" } },
@@ -215,6 +224,43 @@ fn tool_descriptors() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "get_capabilities",
+            "description": "Returns which tools are supported, degraded, or unsupported for the active LMU adapter, so an agent can plan without hitting not_supported/not_yet_implemented errors.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+    ]
+}
+
+/// Static, adapter-independent description of what this build of `lmu-mcp`
+/// can do against a real, live LMU instance (ADR 0002's Amendment) — this is
+/// what a Broadcast Agent needs to plan around, whether it's talking to a
+/// production `SdkAdapter` or a `StubAdapter`-backed test/dev instance,
+/// which intentionally implements more than `SdkAdapter` currently does for
+/// testability. Update this whenever an entry's real-world support changes.
+fn capabilities() -> Vec<ToolCapability> {
+    const REST_GAP_REASON: &str =
+        "not yet wired to LMU's REST API (no confirmed endpoint) — see ADR 0002 amendment";
+    vec![
+        ToolCapability::supported("get_session_overview"),
+        ToolCapability::unsupported("get_session_data", REST_GAP_REASON),
+        ToolCapability::unsupported("get_weekend_info", REST_GAP_REASON),
+        ToolCapability::degraded(
+            "get_roster",
+            "includeSpectators filtering isn't implemented yet over REST — all entries are returned",
+        ),
+        ToolCapability::supported("get_standings"),
+        ToolCapability::supported("get_relatives"),
+        ToolCapability::unsupported("get_weather", REST_GAP_REASON),
+        ToolCapability::unsupported("get_pit_info", REST_GAP_REASON),
+        ToolCapability::unsupported("pit_menu_command", REST_GAP_REASON),
+        ToolCapability::unsupported("set_weather", REST_GAP_REASON),
+        ToolCapability::supported("camera_focus"),
+        ToolCapability::unsupported(
+            "replay_seek_session_time",
+            "no known LMU API (REST or shared-memory) supports replay seeking — see issue #9",
+        ),
+        ToolCapability::supported("get_capabilities"),
     ]
 }
 
@@ -270,16 +316,7 @@ impl LmuMcpHandler {
             },
             "pit_menu_command" => self.pit_menu_command(id, params).await,
             "set_weather" => self.set_weather(id, params).await,
-            "camera_focus" => {
-                let args: CameraFocusArgs = match parse_tool_args(&id, &params, "camera_focus") {
-                    Ok(args) => args,
-                    Err(response) => return response,
-                };
-                match self.adapter.camera_focus(args.car_idx).await {
-                    Ok(()) => tool_ok(id, json!({})),
-                    Err(e) => tool_err(id, error_code(&e), &e.to_string()),
-                }
-            }
+            "camera_focus" => self.camera_focus(id, params).await,
             "replay_seek_session_time" => {
                 let args: ReplaySeekSessionTimeArgs =
                     match parse_tool_args(&id, &params, "replay_seek_session_time") {
@@ -295,6 +332,7 @@ impl LmuMcpHandler {
                     Err(e) => tool_err(id, error_code(&e), &e.to_string()),
                 }
             }
+            "get_capabilities" => tool_ok(id, capabilities()),
             _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
         }
     }
@@ -477,6 +515,79 @@ impl LmuMcpHandler {
             Err(error) => tool_err(id, error_code(&error), &error.to_string()),
         }
     }
+
+    /// Sends `PUT /rest/watch/focus/{slotId}` and verifies it via
+    /// `get_camera_focus` (`GET /rest/watch/focus`) — confirmed working live
+    /// 2026-07-13 (ADR 0002 Amendment), mirroring `iracing-mcp`'s
+    /// send-then-poll `camera_focus`.
+    async fn camera_focus(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
+        let args: CameraFocusArgs = match parse_tool_args(&id, &params, "camera_focus") {
+            Ok(args) => args,
+            Err(response) => return response,
+        };
+
+        let before = match self.adapter.get_camera_focus().await {
+            Ok(before) => before,
+            Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
+        };
+
+        let timeout = Duration::from_millis(args.timeout_ms.max(1));
+        let target_car_idx = args.car_idx;
+
+        let outcome = verify_loop(
+            before,
+            self.adapter.camera_focus(args.car_idx),
+            || self.adapter.get_camera_focus(),
+            move |current| *current == target_car_idx,
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        match outcome {
+            Ok(VerifyOutcome::Verified {
+                before,
+                observed,
+                elapsed,
+            }) => tool_ok(
+                id,
+                json!({
+                    "commandAccepted": true,
+                    "verified": true,
+                    "reason": null,
+                    "before": before,
+                    "observed": observed,
+                    "elapsedMs": elapsed.as_millis()
+                }),
+            ),
+            Ok(VerifyOutcome::TimedOut {
+                before,
+                observed,
+                elapsed,
+            }) => {
+                let reason = format!(
+                    "Camera focus did not reach carIdx={} within {}ms.",
+                    args.car_idx,
+                    timeout.as_millis()
+                );
+                tool_verification_err(
+                    "camera_focus",
+                    id,
+                    "timeout",
+                    &reason,
+                    json!({
+                        "commandAccepted": true,
+                        "verified": false,
+                        "reason": reason,
+                        "before": before,
+                        "observed": observed,
+                        "elapsedMs": elapsed.as_millis()
+                    }),
+                )
+            }
+            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
+        }
+    }
 }
 
 fn parse_tool_args<T: for<'de> Deserialize<'de>>(
@@ -569,10 +680,11 @@ fn build_tool_result(id: Option<Value>, payload: Value, is_error: bool) -> JsonR
 fn error_code(error: &AdapterError) -> &'static str {
     match error {
         AdapterError::NotConnected(_) => "not_connected",
-        AdapterError::SharedMemory(_) => "shared_memory_error",
+        AdapterError::RestApi(_) => "rest_api_error",
         AdapterError::TargetNotFound(_) => "target_not_found",
         AdapterError::InvalidArgument(_) => "invalid_arguments",
         AdapterError::NotSupported(_) => "not_supported",
+        AdapterError::NotYetImplemented(_) => "not_yet_implemented",
     }
 }
 
@@ -587,7 +699,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_all_twelve_tools() {
+    async fn tools_list_returns_all_thirteen_tools() {
         let handler = handler();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -599,7 +711,31 @@ mod tests {
         let response = handler.handle(request).await;
         let tools = response.result.unwrap()["tools"].as_array().unwrap().len();
 
-        assert_eq!(tools, 12);
+        assert_eq!(tools, 13);
+    }
+
+    #[tokio::test]
+    async fn get_capabilities_flags_camera_focus_supported_and_replay_seek_unsupported() {
+        let handler = handler();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::from(1)),
+            method: "tools/call".to_string(),
+            params: json!({ "name": "get_capabilities", "arguments": {} }),
+        };
+
+        let response = handler.handle(request).await;
+        let data = response.result.unwrap()["structuredContent"]["data"].clone();
+        let caps = data.as_array().unwrap();
+
+        let camera_focus = caps.iter().find(|c| c["name"] == "camera_focus").unwrap();
+        assert_eq!(camera_focus["status"], "supported");
+
+        let replay_seek = caps
+            .iter()
+            .find(|c| c["name"] == "replay_seek_session_time")
+            .unwrap();
+        assert_eq!(replay_seek["status"], "unsupported");
     }
 
     #[tokio::test]
@@ -662,22 +798,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn camera_focus_is_not_supported() {
+    async fn camera_focus_verifies_target_car() {
         let handler = handler();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(Value::from(1)),
             method: "tools/call".to_string(),
-            params: json!({ "name": "camera_focus", "arguments": { "carIdx": 0 } }),
+            params: json!({ "name": "camera_focus", "arguments": { "carIdx": 1 } }),
         };
 
         let response = handler.handle(request).await;
-        let result = response.result.unwrap();
+        let data = response.result.unwrap()["structuredContent"]["data"].clone();
 
-        assert_eq!(result["isError"], Value::Bool(true));
-        assert_eq!(
-            result["structuredContent"]["error"]["code"],
-            Value::String("not_supported".to_string())
-        );
+        assert_eq!(data["verified"], Value::Bool(true));
+        assert_eq!(data["observed"], json!(1));
     }
 }

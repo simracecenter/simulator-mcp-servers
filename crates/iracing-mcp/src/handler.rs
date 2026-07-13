@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
-use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler};
+use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, ToolCapability};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration, Instant};
@@ -372,6 +372,41 @@ fn tool_descriptors() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "get_capabilities",
+            "description": "Returns which tools are supported, degraded, or unsupported for the active adapter, so an agent can plan without hitting not_supported errors.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }),
+    ]
+}
+
+/// All 15 tools above are fully implemented against `IracingAdapter` — this
+/// server is the mature reference implementation (ADR 0001 D5), so every
+/// entry is `Supported`. Kept as an explicit list (rather than a loop over
+/// `tool_descriptors()`) so a newly added tool that's *not* yet fully wired
+/// up has to be deliberately added here too.
+fn capabilities() -> Vec<ToolCapability> {
+    vec![
+        ToolCapability::supported("get_session_overview"),
+        ToolCapability::supported("replay_get_state"),
+        ToolCapability::supported("replay_set_playback"),
+        ToolCapability::supported("replay_seek_session_time"),
+        ToolCapability::supported("replay_seek_frame"),
+        ToolCapability::supported("replay_search_event"),
+        ToolCapability::supported("replay_show_window"),
+        ToolCapability::supported("camera_focus"),
+        ToolCapability::supported("camera_set_state"),
+        ToolCapability::supported("get_weekend_info"),
+        ToolCapability::supported("get_roster"),
+        ToolCapability::supported("get_camera_groups"),
+        ToolCapability::supported("get_standings"),
+        ToolCapability::supported("get_relatives"),
+        ToolCapability::supported("resolve_driver"),
+        ToolCapability::supported("get_capabilities"),
     ]
 }
 
@@ -450,6 +485,7 @@ impl IracingMcpHandler {
                     Err(e) => tool_err(id, error_code(&e), &e.to_string()),
                 }
             }
+            "get_capabilities" => tool_ok(id, capabilities()),
             _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
         }
     }
@@ -1485,7 +1521,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_all_fifteen_tools() {
+    async fn tools_list_returns_all_sixteen_tools() {
         let handler = handler();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1497,7 +1533,25 @@ mod tests {
         let response = handler.handle(request).await;
         let tools = response.result.unwrap()["tools"].as_array().unwrap().len();
 
-        assert_eq!(tools, 15);
+        assert_eq!(tools, 16);
+    }
+
+    #[tokio::test]
+    async fn get_capabilities_reports_all_tools_supported() {
+        let handler = handler();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::from(1)),
+            method: "tools/call".to_string(),
+            params: json!({ "name": "get_capabilities", "arguments": {} }),
+        };
+
+        let response = handler.handle(request).await;
+        let data = response.result.unwrap()["structuredContent"]["data"].clone();
+        let caps = data.as_array().unwrap();
+
+        assert_eq!(caps.len(), 16);
+        assert!(caps.iter().all(|c| c["status"] == "supported"));
     }
 
     #[tokio::test]
