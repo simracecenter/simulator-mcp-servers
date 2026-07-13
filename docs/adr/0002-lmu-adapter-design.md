@@ -152,10 +152,20 @@ actually starts.
 - [ ] Verify `rF2SharedMemoryMapPlugin` (or whatever plugin version is current at implementation
       time) actually works against a running LMU instance — buffer layouts, refresh rates, and
       input-buffer behavior confirmed live, on Windows, before writing `crates/lmu-mcp` code.
-- [ ] Resolve camera/replay control parity: confirm whether any input buffer (current or newer
+      **Still open** — `crates/lmu-mcp` was written in #7 without access to the plugin's real
+      headers or a Windows/LMU environment; the struct layouts in `adapter/sdk.rs` are a best-effort
+      reconstruction pending #7's blocking manual live-verification Done criterion.
+- [x] Resolve camera/replay control parity: confirm whether any input buffer (current or newer
       plugin version) supports camera switching or replay seek/search; if not, decide whether
-      `LmuAdapter` ships without those methods or omits them from the trait entirely.
+      `LmuAdapter` ships without those methods or omits them from the trait entirely. Resolved in
+      #7: no known input buffer exists for either; `LmuAdapter` includes both methods for surface
+      parity with `IracingAdapter`, returning `AdapterError::NotSupported` unconditionally in both
+      `Sdk` and `Stub`. Further tracked in #9.
 - [ ] Decide plugin distribution (D4): bundle the DLL, document manual install, or another
-      approach.
+      approach. **Still open/deferred** — #7 only documents manual installation
+      ([`docs/lmu-mcp-server.md`](../lmu-mcp-server.md)); it does not implement bundling.
 - [ ] Pin a specific plugin version once implementation starts, given its history of breaking
-      memory-layout changes between versions.
+      memory-layout changes between versions. **Still open** — not pinned by #7; see
+      `crates/lmu-mcp/src/adapter/sdk.rs`'s module doc comment and
+      [`docs/lmu-mcp-server.md`](../lmu-mcp-server.md)'s "Plugin version pin" note. Should be
+      recorded once the manual live-verification follow-up above is actually performed.

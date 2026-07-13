@@ -1,0 +1,32 @@
+[package]
+name = "lmu-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Le Mans Ultimate (LMU) MCP server — LmuAdapter per ADR 0002."
+
+[dependencies]
+mcp-core = { path = "../mcp-core" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+thiserror.workspace = true
+
+# rF2SharedMemoryMapPlugin exposes its buffers as raw Windows shared memory —
+# no dedicated Rust crate exists for it, so `crates/lmu-mcp/src/adapter/sdk.rs`
+# talks to it directly via `winapi`, mirroring the raw shared-memory access
+# pattern already reviewed in `crates/iracing-mcp/src/adapter/sdk.rs`. Only
+# available on Windows, same as iracing-mcp's SDK dependencies.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+  "errhandlingapi", "handleapi", "memoryapi", "winnt"
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+axum = "0.7"
+http-body-util = "0.1"
+tower = "0.5"

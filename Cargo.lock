@@ -524,6 +524,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "iracing-mcp",
+ "lmu-mcp",
  "mcp-core",
  "native-windows-derive",
  "native-windows-gui",
@@ -557,6 +558,23 @@ name = "linked-hash-map"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
+
+[[package]]
+name = "lmu-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "http-body-util",
+ "mcp-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower",
+ "tracing",
+ "winapi",
+]
 
 [[package]]
 name = "log"

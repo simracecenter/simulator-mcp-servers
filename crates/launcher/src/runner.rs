@@ -21,6 +21,14 @@ pub async fn run(
                 TransportKind::Http => mcp_core::transport::http::run_http(bind, handler).await?,
             }
         }
+        Sim::Lmu => {
+            let adapter = Arc::new(lmu_mcp::adapter::SdkAdapter);
+            let handler = Arc::new(lmu_mcp::LmuMcpHandler::new(adapter));
+            match transport {
+                TransportKind::Stdio => mcp_core::transport::stdio::run_stdio(handler).await?,
+                TransportKind::Http => mcp_core::transport::http::run_http(bind, handler).await?,
+            }
+        }
     }
 
     Ok(())
