@@ -3,12 +3,13 @@
 //! (`crates/iracing-mcp-server/src/mcp/mod.rs`, ADR 0001 D5).
 //!
 //! Holds `Arc<dyn IracingAdapter>` as internal state and implements all 15
-//! tools upstream registers in `tools/list`, including the
-//! verification/polling-loop helpers used by the replay/camera tools.
-//! Extraction of the verification loop into `mcp-core` is deferred until
-//! `lmu-mcp` needs the same pattern (see the issue's design decisions).
+//! tools upstream registers in `tools/list`. The replay/camera tools'
+//! send-poll-verify loop now lives in [`mcp_core::verify`]; this module only
+//! shapes each tool's send/poll/verify closures and turns the resulting
+//! [`mcp_core::verify::VerifyOutcome`] into a `tools/call` response.
 
 use async_trait::async_trait;
+use mcp_core::verify::{verify_loop, VerifyOutcome};
 use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -469,15 +470,6 @@ impl IracingMcpHandler {
             return response;
         }
 
-        if let Err(error) = self
-            .adapter
-            .set_replay_playback(args.speed, args.slow_motion)
-            .await
-        {
-            return tool_err(id, error_code(&error), &error.to_string());
-        }
-
-        let started_at = Instant::now();
         let timeout = if args.speed == 0 {
             Duration::from_millis(5000)
         } else {
@@ -485,57 +477,60 @@ impl IracingMcpHandler {
         };
         let mut pause_candidate_frame = None;
 
-        loop {
-            match self.adapter.get_replay_state().await {
-                Ok(current) => {
-                    let verified =
-                        verify_playback_state(&current, &args, &mut pause_candidate_frame);
+        let outcome = verify_loop(
+            before,
+            self.adapter
+                .set_replay_playback(args.speed, args.slow_motion),
+            || self.adapter.get_replay_state(),
+            |current| verify_playback_state(current, &args, &mut pause_candidate_frame),
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
 
-                    if verified {
-                        return tool_ok(
-                            id,
-                            json!({
-                                "commandAccepted": true,
-                                "verified": true,
-                                "reason": null,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-
-                    if started_at.elapsed() >= timeout {
-                        return tool_verification_err(
-                            "replay_set_playback",
-                            id,
-                            "timeout",
-                            &format!(
-                                "Replay playback telemetry did not reach speed={} slowMotion={} within {}ms.",
-                                args.speed,
-                                args.slow_motion,
-                                timeout.as_millis()
-                            ),
-                            json!({
-                                "commandAccepted": true,
-                                "verified": false,
-                                "reason": format!(
-                                    "Replay playback telemetry did not reach speed={} slowMotion={} within {}ms.",
-                                    args.speed,
-                                    args.slow_motion,
-                                    timeout.as_millis()
-                                ),
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-                }
-                Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
+        match outcome {
+            Ok(VerifyOutcome::Verified {
+                before,
+                observed,
+                elapsed,
+            }) => tool_ok(
+                id,
+                json!({
+                    "commandAccepted": true,
+                    "verified": true,
+                    "reason": null,
+                    "before": before,
+                    "observed": observed,
+                    "elapsedMs": elapsed.as_millis()
+                }),
+            ),
+            Ok(VerifyOutcome::TimedOut {
+                before,
+                observed,
+                elapsed,
+            }) => {
+                let reason = format!(
+                    "Replay playback telemetry did not reach speed={} slowMotion={} within {}ms.",
+                    args.speed,
+                    args.slow_motion,
+                    timeout.as_millis()
+                );
+                tool_verification_err(
+                    "replay_set_playback",
+                    id,
+                    "timeout",
+                    &reason,
+                    json!({
+                        "commandAccepted": true,
+                        "verified": false,
+                        "reason": reason,
+                        "before": before,
+                        "observed": observed,
+                        "elapsedMs": elapsed.as_millis()
+                    }),
+                )
             }
-
-            sleep(Duration::from_millis(50)).await;
+            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
         }
     }
 
@@ -555,69 +550,66 @@ impl IracingMcpHandler {
             return response;
         }
 
-        if let Err(error) = self
-            .adapter
-            .replay_seek_session_time(args.session_num, args.session_time_ms)
-            .await
-        {
-            return tool_err(id, error_code(&error), &error.to_string());
-        }
-
-        let started_at = Instant::now();
         let timeout = Duration::from_millis(5000);
 
-        loop {
-            match self.adapter.get_replay_state().await {
-                Ok(current) => {
-                    let observed_time_ms = (current.replay_session_time * 1000.0).round() as i32;
-                    let verified = current.replay_session_num == args.session_num
-                        && (observed_time_ms - args.session_time_ms).abs() <= args.tolerance_ms;
+        let outcome = verify_loop(
+            before,
+            self.adapter
+                .replay_seek_session_time(args.session_num, args.session_time_ms),
+            || self.adapter.get_replay_state(),
+            |current: &ReplayState| {
+                let observed_time_ms = (current.replay_session_time * 1000.0).round() as i32;
+                current.replay_session_num == args.session_num
+                    && (observed_time_ms - args.session_time_ms).abs() <= args.tolerance_ms
+            },
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
 
-                    if verified {
-                        return tool_ok(
-                            id,
-                            json!({
-                                "commandAccepted": true,
-                                "verified": true,
-                                "reason": null,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-
-                    if started_at.elapsed() >= timeout {
-                        return tool_verification_err(
-                            "replay_seek_session_time",
-                            id,
-                            "timeout",
-                            &format!(
-                                "Replay session time did not reach sessionNum={} sessionTimeMs={} within {}ms.",
-                                args.session_num,
-                                args.session_time_ms,
-                                timeout.as_millis()
-                            ),
-                            json!({
-                                "commandAccepted": true,
-                                "verified": false,
-                                "reason": format!(
-                                    "Replay session time did not reach sessionNum={} sessionTimeMs={} within {}ms.",
-                                    args.session_num,
-                                    args.session_time_ms,
-                                    timeout.as_millis()
-                                ),
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-                }
-                Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
+        match outcome {
+            Ok(VerifyOutcome::Verified {
+                before,
+                observed,
+                elapsed,
+            }) => tool_ok(
+                id,
+                json!({
+                    "commandAccepted": true,
+                    "verified": true,
+                    "reason": null,
+                    "before": before,
+                    "observed": observed,
+                    "elapsedMs": elapsed.as_millis()
+                }),
+            ),
+            Ok(VerifyOutcome::TimedOut {
+                before,
+                observed,
+                elapsed,
+            }) => {
+                let reason = format!(
+                    "Replay session time did not reach sessionNum={} sessionTimeMs={} within {}ms.",
+                    args.session_num,
+                    args.session_time_ms,
+                    timeout.as_millis()
+                );
+                tool_verification_err(
+                    "replay_seek_session_time",
+                    id,
+                    "timeout",
+                    &reason,
+                    json!({
+                        "commandAccepted": true,
+                        "verified": false,
+                        "reason": reason,
+                        "before": before,
+                        "observed": observed,
+                        "elapsedMs": elapsed.as_millis()
+                    }),
+                )
             }
-
-            sleep(Duration::from_millis(50)).await;
+            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
         }
     }
 
@@ -640,91 +632,89 @@ impl IracingMcpHandler {
         let expected_camera = args.camera_number.unwrap_or(before.cam_camera_number);
         let verify_group = args.group_number.is_some();
         let verify_camera = args.camera_number.is_some();
-
-        if let Err(error) = self
-            .adapter
-            .camera_focus(args.car_idx, args.group_number, args.camera_number)
-            .await
-        {
-            return tool_err(id, error_code(&error), &error.to_string());
-        }
-
-        let started_at = Instant::now();
         let timeout = Duration::from_millis(1500);
 
-        loop {
-            match self.adapter.get_replay_state().await {
-                Ok(current) => {
-                    let verified = current.cam_car_idx == args.car_idx
-                        && (!verify_group || current.cam_group_number == expected_group)
-                        && (!verify_camera || current.cam_camera_number == expected_camera);
+        let outcome = verify_loop(
+            before,
+            self.adapter
+                .camera_focus(args.car_idx, args.group_number, args.camera_number),
+            || self.adapter.get_replay_state(),
+            |current: &ReplayState| {
+                current.cam_car_idx == args.car_idx
+                    && (!verify_group || current.cam_group_number == expected_group)
+                    && (!verify_camera || current.cam_camera_number == expected_camera)
+            },
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
 
-                    if verified {
-                        return tool_ok(
-                            id,
-                            json!({
-                                "commandAccepted": true,
-                                "verified": true,
-                                "reason": null,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
+        match outcome {
+            Ok(VerifyOutcome::Verified {
+                before,
+                observed,
+                elapsed,
+            }) => tool_ok(
+                id,
+                json!({
+                    "commandAccepted": true,
+                    "verified": true,
+                    "reason": null,
+                    "before": before,
+                    "observed": observed,
+                    "elapsedMs": elapsed.as_millis()
+                }),
+            ),
+            Ok(VerifyOutcome::TimedOut {
+                before,
+                observed,
+                elapsed,
+            }) => {
+                let expected_parts = [
+                    Some(format!("carIdx={}", args.car_idx)),
+                    if verify_group {
+                        Some(format!("groupNumber={}", expected_group))
+                    } else {
+                        None
+                    },
+                    if verify_camera {
+                        Some(format!("cameraNumber={}", expected_camera))
+                    } else {
+                        None
+                    },
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
 
-                    if started_at.elapsed() >= timeout {
-                        let expected_parts = [
-                            Some(format!("carIdx={}", args.car_idx)),
-                            if verify_group {
-                                Some(format!("groupNumber={}", expected_group))
-                            } else {
-                                None
-                            },
-                            if verify_camera {
-                                Some(format!("cameraNumber={}", expected_camera))
-                            } else {
-                                None
-                            },
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                let reason = format!(
+                    "Camera did not reach expected {} within {}ms.",
+                    expected_parts,
+                    timeout.as_millis()
+                );
 
-                        return tool_verification_err(
-                            "camera_focus",
-                            id,
-                            "timeout",
-                            &format!(
-                                "Camera did not reach expected {} within {}ms.",
-                                expected_parts,
-                                timeout.as_millis()
-                            ),
-                            json!({
-                                "commandAccepted": true,
-                                "verified": false,
-                                "reason": format!(
-                                    "Camera did not reach expected {} within {}ms.",
-                                    expected_parts,
-                                    timeout.as_millis()
-                                ),
-                                "requested": {
-                                    "carIdx": args.car_idx,
-                                    "groupNumber": args.group_number,
-                                    "cameraNumber": args.camera_number
-                                },
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-                }
-                Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
+                tool_verification_err(
+                    "camera_focus",
+                    id,
+                    "timeout",
+                    &reason,
+                    json!({
+                        "commandAccepted": true,
+                        "verified": false,
+                        "reason": reason,
+                        "requested": {
+                            "carIdx": args.car_idx,
+                            "groupNumber": args.group_number,
+                            "cameraNumber": args.camera_number
+                        },
+                        "before": before,
+                        "observed": observed,
+                        "elapsedMs": elapsed.as_millis()
+                    }),
+                )
             }
-
-            sleep(Duration::from_millis(50)).await;
+            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
         }
     }
 
@@ -743,10 +733,6 @@ impl IracingMcpHandler {
             return response;
         }
 
-        if let Err(error) = self.adapter.replay_seek_frame(args.mode, args.frame).await {
-            return tool_err(id, error_code(&error), &error.to_string());
-        }
-
         let target_frame = match args.mode {
             ReplaySeekFrameMode::Begin => args.frame,
             ReplaySeekFrameMode::Current => before.replay_frame_num.saturating_add(args.frame),
@@ -754,60 +740,65 @@ impl IracingMcpHandler {
         }
         .clamp(0, before.replay_frame_num_end.max(before.replay_frame_num));
 
-        let started_at = Instant::now();
         let timeout = Duration::from_millis(1000);
 
-        loop {
-            match self.adapter.get_replay_state().await {
-                Ok(current) => {
-                    let delta = (current.replay_frame_num - target_frame).abs();
-                    let verified = delta <= args.tolerance_frames;
+        let outcome = verify_loop(
+            before,
+            self.adapter.replay_seek_frame(args.mode, args.frame),
+            || self.adapter.get_replay_state(),
+            |current: &ReplayState| {
+                let delta = (current.replay_frame_num - target_frame).abs();
+                delta <= args.tolerance_frames
+            },
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
 
-                    if verified {
-                        return tool_ok(
-                            id,
-                            json!({
-                                "commandAccepted": true,
-                                "verified": true,
-                                "reason": null,
-                                "targetFrame": target_frame,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-
-                    if started_at.elapsed() >= timeout {
-                        return tool_verification_err(
-                            "replay_seek_frame",
-                            id,
-                            "timeout",
-                            &format!(
-                                "Replay frame did not reach targetFrame={} within {}ms.",
-                                target_frame,
-                                timeout.as_millis()
-                            ),
-                            json!({
-                                "commandAccepted": true,
-                                "verified": false,
-                                "reason": format!(
-                                    "Replay frame did not reach targetFrame={} within {}ms.",
-                                    target_frame,
-                                    timeout.as_millis()
-                                ),
-                                "targetFrame": target_frame,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-                }
-                Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
+        match outcome {
+            Ok(VerifyOutcome::Verified {
+                before,
+                observed,
+                elapsed,
+            }) => tool_ok(
+                id,
+                json!({
+                    "commandAccepted": true,
+                    "verified": true,
+                    "reason": null,
+                    "targetFrame": target_frame,
+                    "before": before,
+                    "observed": observed,
+                    "elapsedMs": elapsed.as_millis()
+                }),
+            ),
+            Ok(VerifyOutcome::TimedOut {
+                before,
+                observed,
+                elapsed,
+            }) => {
+                let reason = format!(
+                    "Replay frame did not reach targetFrame={} within {}ms.",
+                    target_frame,
+                    timeout.as_millis()
+                );
+                tool_verification_err(
+                    "replay_seek_frame",
+                    id,
+                    "timeout",
+                    &reason,
+                    json!({
+                        "commandAccepted": true,
+                        "verified": false,
+                        "reason": reason,
+                        "targetFrame": target_frame,
+                        "before": before,
+                        "observed": observed,
+                        "elapsedMs": elapsed.as_millis()
+                    }),
+                )
             }
-
-            sleep(Duration::from_millis(50)).await;
+            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
         }
     }
 
