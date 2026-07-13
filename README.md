@@ -62,6 +62,7 @@ verification happens on a Windows Rig.
 | Document | Purpose |
 | --- | --- |
 | [docs/adr](docs/adr/) | Architectural Decision Records (start with [ADR 0001](docs/adr/0001-project-layout.md)) |
+| [docs/iracing-mcp-server.md](docs/iracing-mcp-server.md) | The `iracing-mcp` server: why it exists, its full tool reference, and the technical approach — also the reference pattern for new `<sim>-mcp` adapters |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to propose changes, coding standards, DCO sign-off |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community expectations |
 | [SECURITY.md](SECURITY.md) | How to report a vulnerability |

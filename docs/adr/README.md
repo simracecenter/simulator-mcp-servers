@@ -7,6 +7,7 @@ or agent) can see *why* the code is shaped the way it is without re-deriving it 
 | # | Title | Status |
 | --- | --- | --- |
 | [0001](0001-project-layout.md) | Repository Layout & Launcher Architecture for `simulator-mcp-servers` | Accepted |
+| [0002](0002-lmu-adapter-design.md) | LMU Telemetry Access Model & `LmuAdapter` Design | Accepted |
 
 ## Adding a new ADR
 
