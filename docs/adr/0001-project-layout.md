@@ -206,6 +206,10 @@ linked to GitHub issues).
 - [ ] Design headless CLI flag surface (`--sim`, `--headless`, `--transport`, config-file path
       override) for PowerShell/Stream Deck scripting.
       [Project card](https://github.com/orgs/simracecenter/projects/1/views/2?pane=issue&itemId=210617441)
-- [ ] LMU adapter research (SDK shape, whether it also uses a fire-and-forget broadcast channel
-      like iRacing, or something else) — separate ADR/spike once LMU work starts.
+- [x] LMU adapter research (SDK shape, whether it also uses a fire-and-forget broadcast channel
+      like iRacing, or something else) — **researched 2026-07-13, see
+      [ADR 0002](0002-lmu-adapter-design.md)**: LMU (rFactor 2 engine lineage) uses a
+      shared-memory-mapped-file model for both telemetry reads and commands (input buffers), not
+      an OS broadcast channel like iRacing. Camera/replay control parity is unconfirmed pending
+      live verification once implementation starts.
       [Project card](https://github.com/orgs/simracecenter/projects/1/views/2?pane=issue&itemId=210617448)
