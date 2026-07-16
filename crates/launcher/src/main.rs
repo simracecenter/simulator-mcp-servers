@@ -31,7 +31,13 @@ struct Cli {
     #[arg(long, value_enum, default_value = "stdio")]
     transport: TransportKind,
 
-    #[arg(long, default_value = "0.0.0.0:8765")]
+    /// Address the HTTP transport binds to. Defaults to loopback so the MCP
+    /// server is not reachable off-host: the transport has no authentication
+    /// (see SECURITY.md), so anything that can reach it can invoke any tool.
+    /// To expose it to a trusted Broadcast Agent host on the LAN, pass an
+    /// explicit interface (e.g. `--bind 0.0.0.0:8765`); never port-forward it
+    /// to the internet.
+    #[arg(long, default_value = "127.0.0.1:8765")]
     bind: String,
 
     /// Skip the tray UI entirely (for PowerShell/Stream Deck automation).
@@ -88,7 +94,7 @@ mod tests {
 
         assert!(cli.sim.is_none());
         assert!(matches!(cli.transport, TransportKind::Stdio));
-        assert_eq!(cli.bind, "0.0.0.0:8765");
+        assert_eq!(cli.bind, "127.0.0.1:8765");
         assert!(!cli.headless);
     }
 

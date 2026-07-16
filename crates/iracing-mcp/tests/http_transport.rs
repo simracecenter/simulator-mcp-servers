@@ -137,6 +137,35 @@ async fn http_mcp_initialize_and_tools_call_work() {
 }
 
 #[tokio::test]
+async fn http_mcp_malformed_body_returns_jsonrpc_parse_error() {
+    let app = build_app();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/mcp")
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from("{ this is not valid json"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("router response");
+
+    // The malformed body is surfaced as a JSON-RPC parse error inside a 200
+    // envelope, not an opaque transport-level 400 the client can't parse.
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = to_bytes(res.into_body(), 1024 * 1024)
+        .await
+        .expect("read body");
+    let json: Value = serde_json::from_slice(&body).expect("json body");
+
+    assert_eq!(json["error"]["code"], Value::from(-32700));
+    assert_eq!(json["id"], Value::Null);
+    assert!(json["result"].is_null());
+}
+
+#[tokio::test]
 async fn http_mcp_replay_tools_work() {
     let app = build_app();
 

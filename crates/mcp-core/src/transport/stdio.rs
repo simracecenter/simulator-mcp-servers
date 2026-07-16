@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tracing::error;
 
 use crate::jsonrpc::{JsonRpcRequest, JsonRpcResponse, McpHandler};
 
@@ -31,13 +32,40 @@ where
             Err(error) => JsonRpcResponse::err(None, -32700, format!("parse error: {error}")),
         };
 
-        let mut encoded = serde_json::to_string(&response).unwrap_or_default();
+        // Never drop a response into a silent blank line: if the handler's
+        // response can't be serialized, emit a well-formed JSON-RPC internal
+        // error (preserving the request id) so the client sees a failure
+        // rather than an empty message.
+        let mut encoded = serialize_response(response);
         encoded.push('\n');
         writer.write_all(encoded.as_bytes()).await?;
         writer.flush().await?;
     }
 
     Ok(())
+}
+
+/// Serializes a response to a JSON string, falling back to a `-32603`
+/// internal-error envelope (with the original id) if the response itself
+/// can't be serialized, and finally to a constant error string if even that
+/// fails. Either fallback is logged so the failure isn't silent.
+fn serialize_response(response: JsonRpcResponse) -> String {
+    match serde_json::to_string(&response) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            error!(%error, "failed to serialize JSON-RPC response");
+            let fallback = JsonRpcResponse::err(
+                Some(response.id),
+                -32603,
+                "internal error: failed to serialize response",
+            );
+            serde_json::to_string(&fallback).unwrap_or_else(|error| {
+                error!(%error, "failed to serialize JSON-RPC error fallback");
+                r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"internal error: failed to serialize response"}}"#
+                    .to_string()
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -90,5 +118,15 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("parse error:"));
+    }
+
+    #[test]
+    fn serialize_response_round_trips_a_normal_response() {
+        let response = JsonRpcResponse::ok(Some(Value::from(7)), serde_json::json!("pong"));
+        let encoded = serialize_response(response);
+        let parsed: Value = serde_json::from_str(&encoded).expect("valid JSON");
+
+        assert_eq!(parsed["id"], Value::from(7));
+        assert_eq!(parsed["result"], Value::from("pong"));
     }
 }

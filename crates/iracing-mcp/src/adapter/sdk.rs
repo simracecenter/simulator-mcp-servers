@@ -14,7 +14,7 @@ use serde_yaml::Value as YamlValue;
 #[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[cfg(windows)]
 use iracing_broadcast::{BroadcastMessage, Client as BroadcastClient};
@@ -443,8 +443,25 @@ impl SdkAdapter {
 #[async_trait]
 impl IracingAdapter for SdkAdapter {
     async fn get_session_overview(&self) -> SessionOverview {
-        let session_data = self.session_data_sync().ok();
-        let replay_state = self.replay_state_sync().ok();
+        // This tool never fails — a disconnected sim is a valid overview, not
+        // an error — but the underlying reads can fail for reasons worth
+        // knowing (unparseable session YAML, a missing telemetry var). Log
+        // those at `warn` before collapsing them into `None` so they aren't
+        // silently swallowed and left indistinguishable from "sim not running".
+        let session_data = match self.session_data_sync() {
+            Ok(data) => Some(data),
+            Err(error) => {
+                warn!(%error, "get_session_overview: session data unavailable");
+                None
+            }
+        };
+        let replay_state = match self.replay_state_sync() {
+            Ok(state) => Some(state),
+            Err(error) => {
+                warn!(%error, "get_session_overview: replay state unavailable");
+                None
+            }
+        };
 
         SessionOverview {
             connected: replay_state.is_some(),
@@ -935,7 +952,7 @@ impl IracingAdapter for SdkAdapter {
             .iter()
             .filter_map(|e| score_driver(e, &q))
             .collect();
-        scored.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+        scored.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
         scored.truncate(limit);
         let best_match = scored.first().cloned();
         Ok(ResolveDriverResult {
