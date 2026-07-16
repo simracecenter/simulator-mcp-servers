@@ -488,50 +488,21 @@ impl IracingMcpHandler {
         )
         .await;
 
-        match outcome {
-            Ok(VerifyOutcome::Verified {
-                before,
-                observed,
-                elapsed,
-            }) => tool_ok(
-                id,
-                json!({
-                    "commandAccepted": true,
-                    "verified": true,
-                    "reason": null,
-                    "before": before,
-                    "observed": observed,
-                    "elapsedMs": elapsed.as_millis()
-                }),
-            ),
-            Ok(VerifyOutcome::TimedOut {
-                before,
-                observed,
-                elapsed,
-            }) => {
-                let reason = format!(
+        respond_verify_outcome(
+            id,
+            "replay_set_playback",
+            outcome,
+            json!({}),
+            json!({}),
+            || {
+                format!(
                     "Replay playback telemetry did not reach speed={} slowMotion={} within {}ms.",
                     args.speed,
                     args.slow_motion,
                     timeout.as_millis()
-                );
-                tool_verification_err(
-                    "replay_set_playback",
-                    id,
-                    "timeout",
-                    &reason,
-                    json!({
-                        "commandAccepted": true,
-                        "verified": false,
-                        "reason": reason,
-                        "before": before,
-                        "observed": observed,
-                        "elapsedMs": elapsed.as_millis()
-                    }),
                 )
-            }
-            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
-        }
+            },
+        )
     }
 
     async fn replay_seek_session_time(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -567,50 +538,21 @@ impl IracingMcpHandler {
         )
         .await;
 
-        match outcome {
-            Ok(VerifyOutcome::Verified {
-                before,
-                observed,
-                elapsed,
-            }) => tool_ok(
-                id,
-                json!({
-                    "commandAccepted": true,
-                    "verified": true,
-                    "reason": null,
-                    "before": before,
-                    "observed": observed,
-                    "elapsedMs": elapsed.as_millis()
-                }),
-            ),
-            Ok(VerifyOutcome::TimedOut {
-                before,
-                observed,
-                elapsed,
-            }) => {
-                let reason = format!(
+        respond_verify_outcome(
+            id,
+            "replay_seek_session_time",
+            outcome,
+            json!({}),
+            json!({}),
+            || {
+                format!(
                     "Replay session time did not reach sessionNum={} sessionTimeMs={} within {}ms.",
                     args.session_num,
                     args.session_time_ms,
                     timeout.as_millis()
-                );
-                tool_verification_err(
-                    "replay_seek_session_time",
-                    id,
-                    "timeout",
-                    &reason,
-                    json!({
-                        "commandAccepted": true,
-                        "verified": false,
-                        "reason": reason,
-                        "before": before,
-                        "observed": observed,
-                        "elapsedMs": elapsed.as_millis()
-                    }),
                 )
-            }
-            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
-        }
+            },
+        )
     }
 
     async fn camera_focus(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -649,73 +591,38 @@ impl IracingMcpHandler {
         )
         .await;
 
-        match outcome {
-            Ok(VerifyOutcome::Verified {
-                before,
-                observed,
-                elapsed,
-            }) => tool_ok(
-                id,
-                json!({
-                    "commandAccepted": true,
-                    "verified": true,
-                    "reason": null,
-                    "before": before,
-                    "observed": observed,
-                    "elapsedMs": elapsed.as_millis()
-                }),
-            ),
-            Ok(VerifyOutcome::TimedOut {
-                before,
-                observed,
-                elapsed,
-            }) => {
+        let timeout_extra = json!({
+            "requested": {
+                "carIdx": args.car_idx,
+                "groupNumber": args.group_number,
+                "cameraNumber": args.camera_number
+            }
+        });
+
+        respond_verify_outcome(
+            id,
+            "camera_focus",
+            outcome,
+            json!({}),
+            timeout_extra,
+            || {
                 let expected_parts = [
                     Some(format!("carIdx={}", args.car_idx)),
-                    if verify_group {
-                        Some(format!("groupNumber={}", expected_group))
-                    } else {
-                        None
-                    },
-                    if verify_camera {
-                        Some(format!("cameraNumber={}", expected_camera))
-                    } else {
-                        None
-                    },
+                    verify_group.then(|| format!("groupNumber={}", expected_group)),
+                    verify_camera.then(|| format!("cameraNumber={}", expected_camera)),
                 ]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(" ");
 
-                let reason = format!(
+                format!(
                     "Camera did not reach expected {} within {}ms.",
                     expected_parts,
                     timeout.as_millis()
-                );
-
-                tool_verification_err(
-                    "camera_focus",
-                    id,
-                    "timeout",
-                    &reason,
-                    json!({
-                        "commandAccepted": true,
-                        "verified": false,
-                        "reason": reason,
-                        "requested": {
-                            "carIdx": args.car_idx,
-                            "groupNumber": args.group_number,
-                            "cameraNumber": args.camera_number
-                        },
-                        "before": before,
-                        "observed": observed,
-                        "elapsedMs": elapsed.as_millis()
-                    }),
                 )
-            }
-            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
-        }
+            },
+        )
     }
 
     async fn replay_seek_frame(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -755,51 +662,22 @@ impl IracingMcpHandler {
         )
         .await;
 
-        match outcome {
-            Ok(VerifyOutcome::Verified {
-                before,
-                observed,
-                elapsed,
-            }) => tool_ok(
-                id,
-                json!({
-                    "commandAccepted": true,
-                    "verified": true,
-                    "reason": null,
-                    "targetFrame": target_frame,
-                    "before": before,
-                    "observed": observed,
-                    "elapsedMs": elapsed.as_millis()
-                }),
-            ),
-            Ok(VerifyOutcome::TimedOut {
-                before,
-                observed,
-                elapsed,
-            }) => {
-                let reason = format!(
+        let target_frame_extra = json!({ "targetFrame": target_frame });
+
+        respond_verify_outcome(
+            id,
+            "replay_seek_frame",
+            outcome,
+            target_frame_extra.clone(),
+            target_frame_extra,
+            || {
+                format!(
                     "Replay frame did not reach targetFrame={} within {}ms.",
                     target_frame,
                     timeout.as_millis()
-                );
-                tool_verification_err(
-                    "replay_seek_frame",
-                    id,
-                    "timeout",
-                    &reason,
-                    json!({
-                        "commandAccepted": true,
-                        "verified": false,
-                        "reason": reason,
-                        "targetFrame": target_frame,
-                        "before": before,
-                        "observed": observed,
-                        "elapsedMs": elapsed.as_millis()
-                    }),
                 )
-            }
-            Err(error) => tool_err(id, error_code(&error), &error.to_string()),
-        }
+            },
+        )
     }
 
     async fn replay_search_event(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -818,62 +696,34 @@ impl IracingMcpHandler {
             return response;
         }
 
-        if let Err(error) = self.adapter.replay_search_event(args.mode).await {
-            return tool_err(id, error_code(&error), &error.to_string());
-        }
-
-        let started_at = Instant::now();
+        let mode = args.mode;
+        let before_for_verify = before.clone();
         let timeout = Duration::from_millis(1000);
 
-        loop {
-            match self.adapter.get_replay_state().await {
-                Ok(current) => {
-                    let verified = verify_search_event_state(args.mode, &before, &current);
+        let outcome = verify_loop(
+            before,
+            self.adapter.replay_search_event(mode),
+            || self.adapter.get_replay_state(),
+            |current: &ReplayState| verify_search_event_state(mode, &before_for_verify, current),
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
 
-                    if verified {
-                        return tool_ok(
-                            id,
-                            json!({
-                                "commandAccepted": true,
-                                "verified": true,
-                                "reason": null,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-
-                    if started_at.elapsed() >= timeout {
-                        return tool_verification_err(
-                            "replay_search_event",
-                            id,
-                            "timeout",
-                            &format!(
-                                "Replay search mode={:?} did not produce expected movement within {}ms.",
-                                args.mode,
-                                timeout.as_millis()
-                            ),
-                            json!({
-                                "commandAccepted": true,
-                                "verified": false,
-                                "reason": format!(
-                                    "Replay search mode={:?} did not produce expected movement within {}ms.",
-                                    args.mode,
-                                    timeout.as_millis()
-                                ),
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-                }
-                Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
-            }
-
-            sleep(Duration::from_millis(50)).await;
-        }
+        respond_verify_outcome(
+            id,
+            "replay_search_event",
+            outcome,
+            json!({}),
+            json!({}),
+            || {
+                format!(
+                    "Replay search mode={:?} did not produce expected movement within {}ms.",
+                    mode,
+                    timeout.as_millis()
+                )
+            },
+        )
     }
 
     async fn replay_show_window(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -1167,71 +1017,103 @@ impl IracingMcpHandler {
         let requested_mask = camera_state_requested_mask(&args);
         let expected_masked_state = expected_state & requested_mask;
 
-        if let Err(error) = self.adapter.camera_set_state(expected_state).await {
-            return tool_err(id, error_code(&error), &error.to_string());
-        }
-
-        let started_at = Instant::now();
         let timeout = Duration::from_millis(750);
 
-        loop {
-            match self.adapter.get_replay_state().await {
-                Ok(current) => {
-                    let observed_masked_state = current.cam_camera_state & requested_mask;
-                    let verified = observed_masked_state == expected_masked_state;
+        let outcome = verify_loop(
+            before,
+            self.adapter.camera_set_state(expected_state),
+            || self.adapter.get_replay_state(),
+            |current: &ReplayState| {
+                (current.cam_camera_state & requested_mask) == expected_masked_state
+            },
+            timeout,
+            Duration::from_millis(50),
+        )
+        .await;
 
-                    if verified {
-                        return tool_ok(
-                            id,
-                            json!({
-                                "commandAccepted": true,
-                                "verified": true,
-                                "reason": null,
-                                "requestedMask": requested_mask,
-                                "expectedMaskedState": expected_masked_state,
-                                "expectedState": expected_state,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
+        let extra = json!({
+            "requestedMask": requested_mask,
+            "expectedMaskedState": expected_masked_state,
+            "expectedState": expected_state
+        });
 
-                    if started_at.elapsed() >= timeout {
-                        return tool_verification_err(
-                            "camera_set_state",
-                            id,
-                            "timeout",
-                            &format!(
-                                "Camera state did not reach expectedMask={} expectedMaskedState={} within {}ms.",
-                                requested_mask,
-                                expected_masked_state,
-                                timeout.as_millis()
-                            ),
-                            json!({
-                                "commandAccepted": true,
-                                "verified": false,
-                                "reason": format!(
-                                    "Camera state did not reach expectedMask={} expectedMaskedState={} within {}ms.",
-                                    requested_mask,
-                                    expected_masked_state,
-                                    timeout.as_millis()
-                                ),
-                                "requestedMask": requested_mask,
-                                "expectedMaskedState": expected_masked_state,
-                                "expectedState": expected_state,
-                                "before": before,
-                                "observed": current,
-                                "elapsedMs": started_at.elapsed().as_millis()
-                            }),
-                        );
-                    }
-                }
-                Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
-            }
+        respond_verify_outcome(
+            id,
+            "camera_set_state",
+            outcome,
+            extra.clone(),
+            extra,
+            || {
+                format!(
+                "Camera state did not reach expectedMask={} expectedMaskedState={} within {}ms.",
+                requested_mask,
+                expected_masked_state,
+                timeout.as_millis()
+            )
+            },
+        )
+    }
+}
 
-            sleep(Duration::from_millis(50)).await;
+/// Shapes a [`verify_loop`] result over [`ReplayState`] into the shared
+/// `commandAccepted`/`verified`/`before`/`observed`/`elapsedMs` `tools/call`
+/// payload used by every verifying command tool.
+///
+/// `verified_extra` / `timeout_extra` are merged into their respective
+/// payloads (each tool decides which of `targetFrame`, `requested`, ... it
+/// wants where); the timeout `reason` is only computed (via `timeout_reason`)
+/// on the timed-out path.
+fn respond_verify_outcome(
+    id: Option<Value>,
+    tool_name: &str,
+    outcome: Result<VerifyOutcome<ReplayState>, AdapterError>,
+    verified_extra: Value,
+    timeout_extra: Value,
+    timeout_reason: impl FnOnce() -> String,
+) -> JsonRpcResponse {
+    match outcome {
+        Ok(VerifyOutcome::Verified {
+            before,
+            observed,
+            elapsed,
+        }) => {
+            let mut payload = json!({
+                "commandAccepted": true,
+                "verified": true,
+                "reason": Value::Null,
+                "before": before,
+                "observed": observed,
+                "elapsedMs": elapsed.as_millis()
+            });
+            merge_object(&mut payload, verified_extra);
+            tool_ok(id, payload)
         }
+        Ok(VerifyOutcome::TimedOut {
+            before,
+            observed,
+            elapsed,
+        }) => {
+            let reason = timeout_reason();
+            let mut payload = json!({
+                "commandAccepted": true,
+                "verified": false,
+                "reason": reason,
+                "before": before,
+                "observed": observed,
+                "elapsedMs": elapsed.as_millis()
+            });
+            merge_object(&mut payload, timeout_extra);
+            tool_verification_err(tool_name, id, "timeout", &reason, payload)
+        }
+        Err(error) => tool_err(id, error_code(&error), &error.to_string()),
+    }
+}
+
+/// Shallow-merges the fields of `extra` (when it is a JSON object) into
+/// `target` (when it is a JSON object), overwriting on key collision.
+fn merge_object(target: &mut Value, extra: Value) {
+    if let (Some(target_map), Value::Object(extra_map)) = (target.as_object_mut(), extra) {
+        target_map.extend(extra_map);
     }
 }
 
@@ -1260,76 +1142,45 @@ fn verify_search_event_state(
     }
 }
 
-fn apply_camera_state_updates(base: i32, args: &CameraSetStateArgs) -> i32 {
-    const CAM_TOOL_ACTIVE: i32 = 0x04;
-    const UI_HIDDEN: i32 = 0x08;
-    const USE_AUTO_SHOT_SELECTION: i32 = 0x10;
-    const USE_TEMPORARY_EDITS: i32 = 0x20;
-    const USE_KEY_ACCELERATION: i32 = 0x40;
-    const USE_KEY_10X_ACCELERATION: i32 = 0x80;
-    const USE_MOUSE_AIM_MODE: i32 = 0x100;
+/// A `CamCameraState` bit paired with the [`CameraSetStateArgs`] field that
+/// requests it.
+type CameraStateField = (i32, fn(&CameraSetStateArgs) -> Option<bool>);
 
-    fn set_bit(state: &mut i32, bit: i32, value: Option<bool>) {
-        if let Some(v) = value {
-            if v {
-                *state |= bit;
+/// The `CamCameraState` bit for each [`CameraSetStateArgs`] field, in the
+/// order upstream documents them. Both the "apply requested updates" and
+/// "which bits were requested" passes iterate this single table so the bit
+/// values live in exactly one place.
+const CAMERA_STATE_FIELDS: &[CameraStateField] = &[
+    (0x04, |args| args.cam_tool_active),
+    (0x08, |args| args.ui_hidden),
+    (0x10, |args| args.use_auto_shot_selection),
+    (0x20, |args| args.use_temporary_edits),
+    (0x40, |args| args.use_key_acceleration),
+    (0x80, |args| args.use_key_10x_acceleration),
+    (0x100, |args| args.use_mouse_aim_mode),
+];
+
+fn apply_camera_state_updates(base: i32, args: &CameraSetStateArgs) -> i32 {
+    let mut state = base;
+    for (bit, field) in CAMERA_STATE_FIELDS {
+        if let Some(enabled) = field(args) {
+            if enabled {
+                state |= bit;
             } else {
-                *state &= !bit;
+                state &= !bit;
             }
         }
     }
-
-    let mut state = base;
-    set_bit(&mut state, CAM_TOOL_ACTIVE, args.cam_tool_active);
-    set_bit(&mut state, UI_HIDDEN, args.ui_hidden);
-    set_bit(
-        &mut state,
-        USE_AUTO_SHOT_SELECTION,
-        args.use_auto_shot_selection,
-    );
-    set_bit(&mut state, USE_TEMPORARY_EDITS, args.use_temporary_edits);
-    set_bit(&mut state, USE_KEY_ACCELERATION, args.use_key_acceleration);
-    set_bit(
-        &mut state,
-        USE_KEY_10X_ACCELERATION,
-        args.use_key_10x_acceleration,
-    );
-    set_bit(&mut state, USE_MOUSE_AIM_MODE, args.use_mouse_aim_mode);
     state
 }
 
 fn camera_state_requested_mask(args: &CameraSetStateArgs) -> i32 {
-    const CAM_TOOL_ACTIVE: i32 = 0x04;
-    const UI_HIDDEN: i32 = 0x08;
-    const USE_AUTO_SHOT_SELECTION: i32 = 0x10;
-    const USE_TEMPORARY_EDITS: i32 = 0x20;
-    const USE_KEY_ACCELERATION: i32 = 0x40;
-    const USE_KEY_10X_ACCELERATION: i32 = 0x80;
-    const USE_MOUSE_AIM_MODE: i32 = 0x100;
-
     let mut mask = 0;
-    if args.cam_tool_active.is_some() {
-        mask |= CAM_TOOL_ACTIVE;
+    for (bit, field) in CAMERA_STATE_FIELDS {
+        if field(args).is_some() {
+            mask |= bit;
+        }
     }
-    if args.ui_hidden.is_some() {
-        mask |= UI_HIDDEN;
-    }
-    if args.use_auto_shot_selection.is_some() {
-        mask |= USE_AUTO_SHOT_SELECTION;
-    }
-    if args.use_temporary_edits.is_some() {
-        mask |= USE_TEMPORARY_EDITS;
-    }
-    if args.use_key_acceleration.is_some() {
-        mask |= USE_KEY_ACCELERATION;
-    }
-    if args.use_key_10x_acceleration.is_some() {
-        mask |= USE_KEY_10X_ACCELERATION;
-    }
-    if args.use_mouse_aim_mode.is_some() {
-        mask |= USE_MOUSE_AIM_MODE;
-    }
-
     mask
 }
 
