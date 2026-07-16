@@ -77,3 +77,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tray.run()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_uses_stdio_defaults() {
+        let cli = Cli::try_parse_from(["simracecenter-launcher"]).unwrap();
+
+        assert!(cli.sim.is_none());
+        assert!(matches!(cli.transport, TransportKind::Stdio));
+        assert_eq!(cli.bind, "0.0.0.0:8765");
+        assert!(!cli.headless);
+    }
+
+    #[test]
+    fn cli_parses_headless_http_overrides() {
+        let cli = Cli::try_parse_from([
+            "simracecenter-launcher",
+            "--sim",
+            "iracing",
+            "--transport",
+            "http",
+            "--bind",
+            "127.0.0.1:9000",
+            "--headless",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.sim, Some(Sim::Iracing));
+        assert!(matches!(cli.transport, TransportKind::Http));
+        assert_eq!(cli.bind, "127.0.0.1:9000");
+        assert!(cli.headless);
+    }
+}

@@ -67,3 +67,14 @@ mod imp {
 }
 
 pub use imp::SingletonGuard;
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_windows_guard_can_be_acquired_repeatedly() {
+        let _first = SingletonGuard::acquire("SimRaceCenterLauncher").unwrap();
+        let _second = SingletonGuard::acquire("SimRaceCenterLauncher").unwrap();
+    }
+}

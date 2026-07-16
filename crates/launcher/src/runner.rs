@@ -25,3 +25,17 @@ pub async fn run(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn http_transport_propagates_bind_errors() {
+        let error = run(Sim::Iracing, TransportKind::Http, "")
+            .await
+            .unwrap_err();
+
+        assert!(!error.to_string().is_empty());
+    }
+}

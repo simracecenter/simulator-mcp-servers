@@ -45,3 +45,40 @@ pub fn load() -> Result<LauncherConfig, mcp_core::config::ConfigError> {
 pub fn save(config: &LauncherConfig) -> Result<(), mcp_core::config::ConfigError> {
     mcp_core::config::save(&config_path(), config)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_config_uses_iracing() {
+        assert_eq!(LauncherConfig::default().active_sim, Sim::Iracing);
+    }
+
+    #[test]
+    fn config_path_load_and_save_use_appdata() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = std::env::temp_dir().join(format!(
+            "simracecenter-launcher-config-test-{}",
+            std::process::id()
+        ));
+        std::env::set_var("APPDATA", &appdata);
+
+        let path = config_path();
+        assert_eq!(path, appdata.join("SimRaceCenter").join("config.toml"));
+        assert_eq!(load().unwrap().active_sim, Sim::Iracing);
+
+        let config = LauncherConfig {
+            active_sim: Sim::Iracing,
+        };
+        save(&config).unwrap();
+        assert_eq!(load().unwrap().active_sim, Sim::Iracing);
+
+        std::fs::remove_dir_all(&appdata).ok();
+        std::env::remove_var("APPDATA");
+    }
+}
