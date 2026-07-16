@@ -3,11 +3,9 @@ resolver = "2"
 members = [
     "crates/mcp-core",
     "crates/iracing-mcp",
+    "crates/lmu-mcp",
     "crates/launcher",
 ]
-
-# crates/lmu-mcp is added once LMU adapter research (see project board) has
-# landed a concrete design — see ADR 0001 D1.
 
 [workspace.package]
 version = "0.1.0"

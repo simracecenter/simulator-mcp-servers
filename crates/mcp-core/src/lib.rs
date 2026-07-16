@@ -6,9 +6,11 @@
 //! transports, and the config-merge and send-poll-verify-loop helpers
 //! ported/promoted from `margic/iracing-mcp` and `iracing-mcp`.
 
+pub mod capabilities;
 pub mod config;
 pub mod jsonrpc;
 pub mod transport;
 pub mod verify;
 
+pub use capabilities::{CapabilityStatus, ToolCapability};
 pub use jsonrpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpHandler};

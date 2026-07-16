@@ -63,6 +63,7 @@ These have no side effects and never require being out of the car.
 | `get_relatives` | *(none)* | Live field-order/gap view computed from telemetry arrays — who's near whom on track right now. |
 | `resolve_driver` | `query` (string, required), `limit?` (int) | Maps a spoken/typed name, initials, or car number to a ranked list of `carIdx` candidates with confidence + match reason. |
 | `replay_get_state` | *(none)* | Live replay + camera telemetry (frame, session time, playback speed, current camera/group/car) — the same snapshot the verification loop below polls internally; also useful standalone for UI. |
+| `get_capabilities` | *(none)* | Returns `{ name, status, reason? }` for every tool in this list — `status` is always `supported` here since this is the mature reference implementation, but the same tool exists on `lmu-mcp` where support varies by tool. Lets an agent check support once instead of learning gaps from runtime errors. |
 
 ### Camera tools
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum Sim {
     Iracing,
-    // Lmu, // added once LMU adapter research lands — see the project board.
+    Lmu,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
