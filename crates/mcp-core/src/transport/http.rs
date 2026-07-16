@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::State,
     routing::{get, post},
     Json, Router,
@@ -35,11 +36,22 @@ async fn healthz() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
+/// Takes the raw request body rather than an `axum::Json<JsonRpcRequest>`
+/// extractor so a malformed body returns a JSON-RPC `-32700` parse error in
+/// a `200` envelope — matching the stdio transport — instead of axum's
+/// opaque `400` with a plain-text body the JSON-RPC client can't interpret.
 async fn handle_request<H: McpHandler>(
     State(handler): State<Arc<H>>,
-    Json(request): Json<JsonRpcRequest>,
+    body: Bytes,
 ) -> Json<JsonRpcResponse> {
-    Json(handler.handle(request).await)
+    match serde_json::from_slice::<JsonRpcRequest>(&body) {
+        Ok(request) => Json(handler.handle(request).await),
+        Err(error) => Json(JsonRpcResponse::err(
+            None,
+            -32700,
+            format!("parse error: {error}"),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -79,5 +91,29 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(parsed["result"], Value::from("pong"));
+    }
+
+    #[tokio::test]
+    async fn malformed_body_returns_jsonrpc_parse_error() {
+        let app = Router::new()
+            .route("/", post(handle_request::<PingHandler>))
+            .with_state(Arc::new(PingHandler));
+
+        let request = Request::post("/")
+            .header("content-type", "application/json")
+            .body(Body::from("{ not valid json"))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // A malformed body is reported inside a 200 JSON-RPC envelope rather
+        // than an opaque transport-level 400.
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let parsed: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(parsed["error"]["code"], Value::from(-32700));
+        assert_eq!(parsed["id"], Value::Null);
+        assert!(parsed["result"].is_null());
     }
 }

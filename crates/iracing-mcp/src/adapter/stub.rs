@@ -381,7 +381,7 @@ impl IracingAdapter for StubAdapter {
                 })
             })
             .collect();
-        scored.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+        scored.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
         scored.truncate(limit);
         let best_match = scored.first().cloned();
         Ok(ResolveDriverResult {
