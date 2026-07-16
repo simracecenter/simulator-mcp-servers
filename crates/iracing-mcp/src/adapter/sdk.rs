@@ -196,6 +196,51 @@ impl SdkAdapter {
     }
 }
 
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    fn assert_not_available<T>(result: Result<T, AdapterError>) {
+        match result {
+            Err(AdapterError::NotConnected(message)) => {
+                assert_eq!(message, "the iRacing SDK is only available on Windows");
+            }
+            _ => panic!("expected the non-Windows SDK error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_windows_adapter_reports_disconnected_for_every_operation() {
+        let adapter = SdkAdapter;
+        let overview = adapter.get_session_overview().await;
+
+        assert!(!overview.connected);
+        assert!(!overview.is_replay);
+        assert!(!overview.is_in_car);
+        assert_eq!(overview.session_name, "Disconnected");
+        assert_eq!(overview.track_name, "Disconnected");
+
+        assert_not_available(adapter.get_session_data().await);
+        assert_not_available(adapter.get_replay_state().await);
+        assert_not_available(adapter.set_replay_playback(1, false).await);
+        assert_not_available(adapter.replay_seek_session_time(0, 0).await);
+        assert_not_available(
+            adapter
+                .replay_seek_frame(ReplaySeekFrameMode::Begin, 0)
+                .await,
+        );
+        assert_not_available(adapter.replay_search_event(ReplaySearchMode::ToStart).await);
+        assert_not_available(adapter.camera_set_state(0).await);
+        assert_not_available(adapter.camera_focus(0, None, None).await);
+        assert_not_available(adapter.get_weekend_info().await);
+        assert_not_available(adapter.get_roster(false, false).await);
+        assert_not_available(adapter.get_camera_groups().await);
+        assert_not_available(adapter.get_standings(None).await);
+        assert_not_available(adapter.get_relatives().await);
+        assert_not_available(adapter.resolve_driver("driver", 1).await);
+    }
+}
+
 #[cfg(windows)]
 impl SdkAdapter {
     fn session_data_sync(&self) -> Result<SessionData, AdapterError> {

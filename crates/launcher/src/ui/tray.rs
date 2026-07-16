@@ -72,3 +72,19 @@ mod imp {
 // `LauncherUi` trait object), but is kept public for tests/future callers.
 #[allow(unused_imports)]
 pub use imp::{build, TrayUi};
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use crate::ui::LauncherUi;
+
+    #[test]
+    fn non_windows_tray_builds_but_cannot_run() {
+        let tray = build().unwrap();
+
+        assert_eq!(
+            tray.run().unwrap_err(),
+            "tray UI is only available on Windows builds"
+        );
+    }
+}
