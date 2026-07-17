@@ -8,6 +8,7 @@ or agent) can see *why* the code is shaped the way it is without re-deriving it 
 | --- | --- | --- |
 | [0001](0001-project-layout.md) | Repository Layout & Launcher Architecture for `simulator-mcp-servers` | Accepted |
 | [0002](0002-lmu-adapter-design.md) | LMU Telemetry Access Model & `LmuAdapter` Design | Accepted |
+| [0003](0003-single-active-simulator-constraint.md) | Single Active Simulator Constraint — No Multi-Instance Support | Accepted |
 
 ## Adding a new ADR
 
