@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,15 @@ use serde::{Deserialize, Serialize};
 pub enum Sim {
     Iracing,
     Lmu,
+}
+
+impl fmt::Display for Sim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Sim::Iracing => write!(f, "iracing"),
+            Sim::Lmu => write!(f, "lmu"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,9 +49,7 @@ pub fn load() -> Result<LauncherConfig, mcp_core::config::ConfigError> {
     mcp_core::config::load_or_default(&config_path())
 }
 
-// Used by the tray UI's settings window once it can edit config (ADR 0001 D4);
-// not yet called from the CLI-only skeleton.
-#[allow(dead_code)]
+// Used by the tray UI's settings window and the settings HTTP server (ADR 0001 D4).
 pub fn save(config: &LauncherConfig) -> Result<(), mcp_core::config::ConfigError> {
     mcp_core::config::save(&config_path(), config)
 }

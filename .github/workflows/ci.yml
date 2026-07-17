@@ -41,3 +41,24 @@ jobs:
 
       - name: Build (cross-compile to Windows, MinGW)
         run: cargo build --workspace --target x86_64-pc-windows-gnu
+
+      - name: Build launcher binary (Linux, native)
+        run: cargo build --workspace
+
+      - name: Setup Node for e2e tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install e2e dependencies and Playwright browsers
+        run: |
+          cd e2e
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright e2e tests
+        run: |
+          cd e2e
+          npx playwright test

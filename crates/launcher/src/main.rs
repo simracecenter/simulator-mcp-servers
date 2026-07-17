@@ -1,10 +1,15 @@
 mod config;
 mod runner;
+mod settings_server;
 mod singleton;
 mod ui;
 
+use std::sync::Arc;
+
 use clap::{Parser, ValueEnum};
 use config::Sim;
+use runner::{build_handler, run_transport, SwappableHandler};
+use settings_server::SettingsState;
 use singleton::SingletonGuard;
 use tracing::{error, info};
 use ui::LauncherUi;
@@ -40,6 +45,12 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1:8765")]
     bind: String,
 
+    /// Address the settings HTTP server binds to. Defaults to loopback for the
+    /// same reason as `--bind`: the settings server has no authentication and
+    /// should not be reachable off-host.
+    #[arg(long, default_value = "127.0.0.1:8766")]
+    settings_bind: String,
+
     /// Skip the tray UI entirely (for PowerShell/Stream Deck automation).
     #[arg(long)]
     headless: bool,
@@ -64,24 +75,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(
         ?active_sim,
         headless = cli.headless,
+        settings_bind = %cli.settings_bind,
         "starting simracecenter-launcher"
     );
 
-    if cli.headless {
-        return runner::run(active_sim, cli.transport, &cli.bind).await;
-    }
+    let handler = Arc::new(SwappableHandler::new(build_handler(active_sim)));
+    let settings_state = SettingsState::new(handler.clone(), active_sim);
 
     let transport = cli.transport;
     let bind = cli.bind;
-    tokio::spawn(async move {
-        if let Err(error) = runner::run(active_sim, transport, &bind).await {
+    let mcp_handle = tokio::spawn(async move {
+        if let Err(error) = run_transport(handler, transport, &bind).await {
             error!(%error, "mcp server task exited");
         }
     });
 
-    let tray = ui::tray::build()?;
-    tray.run()?;
-    Ok(())
+    let settings_bind = cli.settings_bind;
+    let settings_handle = tokio::spawn(async move {
+        if let Err(error) = settings_server::run(&settings_bind, settings_state).await {
+            error!(%error, "settings server task exited");
+        }
+    });
+
+    if cli.headless {
+        tokio::select! {
+            _ = mcp_handle => {},
+            _ = settings_handle => {},
+            _ = tokio::signal::ctrl_c() => {
+                info!("received shutdown signal");
+            }
+        }
+        Ok(())
+    } else {
+        let tray = ui::tray::build()?;
+        tray.run()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +124,7 @@ mod tests {
         assert!(cli.sim.is_none());
         assert!(matches!(cli.transport, TransportKind::Stdio));
         assert_eq!(cli.bind, "127.0.0.1:8765");
+        assert_eq!(cli.settings_bind, "127.0.0.1:8766");
         assert!(!cli.headless);
     }
 
@@ -108,6 +138,8 @@ mod tests {
             "http",
             "--bind",
             "127.0.0.1:9000",
+            "--settings-bind",
+            "127.0.0.1:9001",
             "--headless",
         ])
         .unwrap();
@@ -115,6 +147,7 @@ mod tests {
         assert_eq!(cli.sim, Some(Sim::Iracing));
         assert!(matches!(cli.transport, TransportKind::Http));
         assert_eq!(cli.bind, "127.0.0.1:9000");
+        assert_eq!(cli.settings_bind, "127.0.0.1:9001");
         assert!(cli.headless);
     }
 }

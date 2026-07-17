@@ -24,13 +24,14 @@ Status: **early development**. Design decisions live in [docs/adr](docs/adr/) (s
 
 ```
 simulator-mcp-servers/
-└── crates/
-    ├── mcp-core/      # Shared MCP JSON-RPC layer, transports, verification-loop
-    │                  # helpers, and config load/merge — used by every simulator crate.
-    ├── iracing-mcp/   # iRacing telemetry + replay/camera control MCP server.
-    ├── lmu-mcp/       # (planned) Le Mans Ultimate MCP server.
-    └── launcher/      # The Director Console: CLI + singleton runner + tray UI,
-                        # hosts exactly one active simulator's MCP server at a time.
+├── crates/
+│   ├── mcp-core/      # Shared MCP JSON-RPC layer, transports, verification-loop
+│   │                  # helpers, and config load/merge — used by every simulator crate.
+│   ├── iracing-mcp/   # iRacing telemetry + replay/camera control MCP server.
+│   ├── lmu-mcp/       # Le Mans Ultimate MCP server.
+│   └── launcher/      # The Director Console: CLI + singleton runner + settings web UI,
+│                       # hosts exactly one active simulator's MCP server at a time.
+└── e2e/               # Playwright end-to-end tests for the launcher's settings UI.
 ```
 
 
@@ -50,12 +51,18 @@ cargo build --workspace --target x86_64-pc-windows-gnu
 # Formatting and lints (required before opening a PR)
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+
+# End-to-end browser tests for the launcher's settings UI
+cd e2e
+npm ci
+npx playwright test
 ```
 
 The Director Console (`launcher`) only runs meaningfully on Windows, next to a running simulator —
 its SDK adapters use local shared memory and Win32 broadcast messages that don't exist on Linux.
-Linux/dev-container work verifies logic against stub adapters and cross-compilation; end-to-end
-verification happens on a Windows Rig.
+Linux/dev-container work verifies logic against stub adapters and cross-compilation, and the
+`e2e/` Playwright suite drives the settings UI headless on Linux; end-to-end verification with a
+live sim still happens on a Windows Rig.
 
 ## Documentation
 

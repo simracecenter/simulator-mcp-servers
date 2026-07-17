@@ -91,9 +91,26 @@ out of the box, and a throwaway spike confirmed it cross-compiles cleanly for
 `#![windows_subsystem = "windows"]` suppressing the console window. Full rationale recorded on
 the [project card](https://github.com/orgs/simracecenter/projects/1/views/2?pane=issue&itemId=210617424).
 
+**Update (2026-07-17):** the launcher also starts an always-on local **settings HTTP server**
+(`axum`, static HTML/vanilla JS) on `127.0.0.1:8766` by default (`--settings-bind`), implemented in a
+dedicated `crates/launcher/src/settings_server.rs` module. This is deliberately *not* the
+Tauri/webview UI rejected above: no browser engine or WebView2 runtime is bundled; the launcher
+only serves a tiny static page that the user's own OS browser opens. It therefore does not
+reintroduce the bundled-webview resource cost that motivated the rejection, while still giving
+Drivers a point-and-click way to switch the active simulator. The settings server is a companion to
+the native tray UI, not a replacement — the tray UI continues to work unchanged. It exposes `GET /`
+(the UI), `GET /api/status`, and `POST /api/sim`; selecting a sim persists the choice to
+`config.toml` and hot-swaps the in-process MCP handler. The handler itself is wrapped by a
+`SwappableHandler` (a `McpHandler` that delegates to an `Arc<dyn McpHandler>`) so the MCP transport
+is wired once at startup and only the inner handler is replaced on switch, preserving the
+single-active-simulator invariant (ADR 0003). Like the MCP HTTP transport, the settings server
+binds loopback by default because it has no authentication.
+
 Scripted automation (PowerShell, Stream Deck) uses the same binary in headless mode
 (`--sim iracing --headless` or similar), skipping the tray/window entirely but going through the
 identical runner/config/singleton path — one code path for both interactive and scripted launch.
+The settings server is also active in `--headless` mode, so external scripts can query or change
+the active simulator without depending on the MCP transport type.
 
 **Rejected alternatives:**
 - *Separate binary per server, launcher spawns children* — better crash isolation, but adds a
@@ -206,6 +223,9 @@ linked to GitHub issues).
 - [ ] Design headless CLI flag surface (`--sim`, `--headless`, `--transport`, config-file path
       override) for PowerShell/Stream Deck scripting.
       [Project card](https://github.com/orgs/simracecenter/projects/1/views/2?pane=issue&itemId=210617441)
+- [ ] Future evaluation: once the web settings UI and the native tray UI have both been exercised
+      in production, decide whether the web UI should replace the tray UI on Windows. The web UI is
+      deliberately a companion today, not a replacement (see D2 update above).
 - [x] LMU adapter research (SDK shape, whether it also uses a fire-and-forget broadcast channel
       like iRacing, or something else) — **researched 2026-07-13, see
       [ADR 0002](0002-lmu-adapter-design.md)**: LMU (rFactor 2 engine lineage) uses a
