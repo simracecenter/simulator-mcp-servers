@@ -52,11 +52,13 @@ jobs:
           cache: 'npm'
           cache-dependency-path: e2e/package-lock.json
 
-      - name: Install e2e dependencies and Playwright browsers
+      - name: Install e2e dependencies
         run: |
           cd e2e
           npm ci
-          npx playwright install --with-deps chromium
+
+      - name: Locate system Chrome for Playwright
+        run: echo "PLAYWRIGHT_CHROME_BIN=$(which google-chrome || which google-chrome-stable || which chromium || which chromium-browser)" >> "$GITHUB_ENV"
 
       - name: Run Playwright e2e tests
         run: |
