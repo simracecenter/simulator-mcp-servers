@@ -4,6 +4,8 @@
 
 #[cfg(windows)]
 mod imp {
+    use std::sync::OnceLock;
+
     use native_windows_derive as nwd;
     use native_windows_gui as nwg;
     use nwd::NwgUi;
@@ -16,6 +18,8 @@ mod imp {
     // to `TrayUi`; `build_ui()` returns that wrapper, not `TrayUi` itself.
     use self::tray_ui_ui::TrayUiUi;
 
+    static SETTINGS_URL: OnceLock<String> = OnceLock::new();
+
     /// "Director Console" — Sim RaceCenter's name for the main control
     /// interface (never "Admin Panel"; see the brand & voice guide).
     #[derive(Default, NwgUi)]
@@ -23,6 +27,10 @@ mod imp {
         #[nwg_control(size: (320, 160), position: (300, 300), title: "Director Console")]
         #[nwg_events(OnWindowClose: [nwg::stop_thread_dispatch()])]
         window: nwg::Window,
+
+        #[nwg_control(text: "Open Director Console", size: (220, 40), position: (50, 40), parent: window)]
+        #[nwg_events(OnButtonClick: [TrayUi::open_web_ui])]
+        open_button: nwg::Button,
 
         #[nwg_control(tip: Some("Sim RaceCenter — Director Console"))]
         #[nwg_events(MousePressLeftUp: [TrayUi::show_window])]
@@ -33,6 +41,18 @@ mod imp {
         fn show_window(&self) {
             self.window.set_visible(true);
         }
+
+        fn open_web_ui(&self) {
+            if let Some(url) = SETTINGS_URL.get() {
+                if let Err(error) = open::that(url) {
+                    nwg::modal_error_message(
+                        &self.window,
+                        "Could not open Director Console",
+                        &error.to_string(),
+                    );
+                }
+            }
+        }
     }
 
     impl LauncherUi for TrayUi {
@@ -42,7 +62,8 @@ mod imp {
         }
     }
 
-    pub fn build() -> Result<TrayUiUi, String> {
+    pub fn build(settings_url: String) -> Result<TrayUiUi, String> {
+        let _ = SETTINGS_URL.set(settings_url);
         nwg::init().map_err(|error| error.to_string())?;
         TrayUi::build_ui(Default::default()).map_err(|error| error.to_string())
     }
@@ -63,7 +84,7 @@ mod imp {
         }
     }
 
-    pub fn build() -> Result<TrayUi, String> {
+    pub fn build(_settings_url: String) -> Result<TrayUi, String> {
         Ok(TrayUi)
     }
 }
@@ -80,7 +101,7 @@ mod tests {
 
     #[test]
     fn non_windows_tray_builds_but_cannot_run() {
-        let tray = build().unwrap();
+        let tray = build("http://127.0.0.1:8766/".to_string()).unwrap();
 
         assert_eq!(
             tray.run().unwrap_err(),

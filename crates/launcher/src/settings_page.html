@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim RaceCenter — Director Console Settings</title>
+<style>
+  :root {
+    --apex: #FF5F1F;
+    --telemetry: #0EA5E9;
+    --bg: #05070A;
+    --surface: #111827;
+    --text: #E5E7EB;
+    --muted: #9CA3AF;
+  }
+  body {
+    margin: 0;
+    font-family: Roboto, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  .container {
+    width: 420px;
+    max-width: 90%;
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, .5);
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 1.25rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: .875rem;
+    margin-bottom: 24px;
+  }
+  .options {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .option {
+    flex: 1;
+    background: var(--bg);
+    border: 2px solid #1F2937;
+    border-radius: 6px;
+    padding: 16px;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color .15s;
+  }
+  .option:hover {
+    border-color: var(--apex);
+  }
+  .option.active {
+    border-color: var(--apex);
+  }
+  .option h3 {
+    margin: 0 0 4px;
+    font-size: 1rem;
+  }
+  .option p {
+    margin: 0;
+    color: var(--muted);
+    font-size: .75rem;
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: .875rem;
+    color: var(--muted);
+  }
+  .status-value {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .status-value.connected {
+    color: var(--telemetry);
+  }
+  .status-value.not-running {
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Director Console</h1>
+  <div class="subtitle">Select active simulator telemetry source</div>
+  <div class="options" role="group" aria-label="Active simulator">
+    <div class="option" id="opt-iracing" data-testid="select-iracing" role="button" aria-pressed="false" tabindex="0">
+      <h3>iRacing</h3>
+      <p>iRacing telemetry</p>
+    </div>
+    <div class="option" id="opt-lmu" data-testid="select-lmu" role="button" aria-pressed="false" tabindex="0">
+      <h3>LMU</h3>
+      <p>Le Mans Ultimate</p>
+    </div>
+  </div>
+  <div class="status">
+    <span>Active source</span>
+    <span class="status-value" data-testid="active-sim" id="active-sim">—</span>
+  </div>
+  <div class="status" style="margin-top: 8px;">
+    <span>Connection status</span>
+    <span class="status-value" data-testid="connection-status" id="connection-status">—</span>
+  </div>
+</div>
+<script>
+const optIracing = document.getElementById('opt-iracing');
+const optLmu = document.getElementById('opt-lmu');
+const activeEl = document.getElementById('active-sim');
+const statusEl = document.getElementById('connection-status');
+
+function setActive(sim, connected, toolNames) {
+  const simName = sim === 'lmu' ? 'LMU' : 'iRacing';
+  activeEl.textContent = simName;
+  statusEl.textContent = connected ? 'Connected' : 'Not Running';
+  statusEl.className = 'status-value ' + (connected ? 'connected' : 'not-running');
+  optIracing.classList.toggle('active', sim === 'iracing');
+  optIracing.setAttribute('aria-pressed', sim === 'iracing');
+  optLmu.classList.toggle('active', sim === 'lmu');
+  optLmu.setAttribute('aria-pressed', sim === 'lmu');
+  console.log('Telemetry source:', simName, 'Tools:', (toolNames || []).length);
+}
+
+async function loadStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  setActive(data.sim, data.connected, data.toolNames);
+}
+
+async function selectSim(sim) {
+  const res = await fetch('/api/sim', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sim })
+  });
+  const data = await res.json();
+  setActive(data.sim, data.connected, data.toolNames);
+}
+
+optIracing.addEventListener('click', () => selectSim('iracing'));
+optLmu.addEventListener('click', () => selectSim('lmu'));
+optIracing.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('iracing'); });
+optLmu.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('lmu'); });
+
+loadStatus();
+setInterval(loadStatus, 5000);
+</script>
+</body>
+</html>
