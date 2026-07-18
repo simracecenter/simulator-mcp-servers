@@ -32,7 +32,10 @@ mod imp {
         #[nwg_events(OnButtonClick: [TrayUi::open_web_ui])]
         open_button: nwg::Button,
 
-        #[nwg_control(tip: Some("Sim RaceCenter — Director Console"))]
+        #[nwg_resource(source_bin: Some(include_bytes!("../../assets/logo.ico")))]
+        icon: nwg::Icon,
+
+        #[nwg_control(icon: Some(&data.icon), tip: Some("Sim RaceCenter — Director Console"))]
         #[nwg_events(MousePressLeftUp: [TrayUi::show_window])]
         tray: nwg::TrayNotification,
     }
