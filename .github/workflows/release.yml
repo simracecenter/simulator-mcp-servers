@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build a release for, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: simracecenter-launcher
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  release:
+    name: Build Windows exe and publish release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches Cargo version
+        shell: bash
+        run: |
+          CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG_VER="${{ steps.tag.outputs.tag }}"
+          TAG_VER="${TAG_VER#v}"
+          if [ "$CARGO_VER" != "$TAG_VER" ]; then
+            echo "::error::Tag version ($TAG_VER) does not match Cargo.toml version ($CARGO_VER)"
+            exit 1
+          fi
+
+      - name: Build launcher (release)
+        run: cargo build --release -p launcher --target ${{ env.TARGET }}
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          STEM="${BIN_NAME}-${TAG}-${TARGET}"
+          mkdir -p dist "staging/${STEM}"
+          cp "target/${TARGET}/release/${BIN_NAME}.exe" "staging/${STEM}/${BIN_NAME}.exe"
+          cp LICENSE README.md "staging/${STEM}/"
+          # Raw, versioned exe for direct download
+          cp "target/${TARGET}/release/${BIN_NAME}.exe" "dist/${STEM}.exe"
+          # Zip bundle (exe + LICENSE + README)
+          (cd staging && 7z a -tzip "../dist/${STEM}.zip" "${STEM}") >/dev/null
+          # Checksums for every published asset
+          (cd dist && sha256sum ./* > "${STEM}.sha256")
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.sha256

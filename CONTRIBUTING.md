@@ -85,6 +85,36 @@ Ref: ADR 0001 D2
 Use the PR template checklist. In short: tests pass, `fmt`/`clippy` are clean, commits are signed
 off, and any architecture-affecting change updates the relevant ADR.
 
+## Releasing
+
+Releases are produced by the [`release.yml`](.github/workflows/release.yml) GitHub Actions
+workflow, which builds the Director Console (`simracecenter-launcher.exe`) on a native Windows
+runner (MSVC, `x86_64-pc-windows-msvc`) and publishes it to a
+[GitHub Release](https://github.com/simracecenter/simulator-mcp-servers/releases).
+
+To cut a release:
+
+1. Bump `version` under `[workspace.package]` in the root `Cargo.toml`, commit it (DCO-signed),
+   and merge to `main`.
+2. Tag the release commit with a matching `v`-prefixed semver tag and push it:
+
+   ```sh
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+   The tag version (minus the leading `v`) must equal the `Cargo.toml` version — the workflow
+   fails fast otherwise.
+3. The workflow builds the Windows exe and creates the Release, attaching:
+   - `simracecenter-launcher-<tag>-x86_64-pc-windows-msvc.exe` — the raw executable;
+   - `simracecenter-launcher-<tag>-x86_64-pc-windows-msvc.zip` — the exe bundled with `LICENSE`
+     and `README.md`;
+   - `simracecenter-launcher-<tag>-x86_64-pc-windows-msvc.sha256` — SHA256 checksums.
+
+Pre-release tags (containing a hyphen, e.g. `v0.1.0-rc.1`) are published as GitHub pre-releases.
+You can also re-run a build for an existing tag via the workflow's manual `workflow_dispatch`
+trigger. The exe is currently **unsigned** — Windows SmartScreen may warn on first run.
+
 ## Reporting bugs / requesting features
 
 Use the issue templates under `.github/ISSUE_TEMPLATE/`. For security issues, do **not** open a

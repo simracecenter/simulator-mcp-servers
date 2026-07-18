@@ -55,6 +55,11 @@ MCP-capable client or agent, and build against the same tool surface that powers
 
 ## Getting Started
 
+Pre-built Windows builds of the Director Console (`simracecenter-launcher.exe`) are attached to
+each [GitHub Release](https://github.com/simracecenter/simulator-mcp-servers/releases). See
+[CONTRIBUTING.md § Releasing](CONTRIBUTING.md#releasing) for how releases are cut. To build from
+source instead:
+
 Development happens in the provided dev container (Linux, cross-compiling to Windows):
 
 ```sh
