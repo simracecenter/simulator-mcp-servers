@@ -7,20 +7,25 @@
 [![Build status](https://img.shields.io/github/actions/workflow/status/simracecenter/simulator-mcp-servers/ci.yml?branch=main)](https://github.com/simracecenter/simulator-mcp-servers/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/simracecenter/simulator-mcp-servers?color=FF5F1F)](LICENSE)
 
-**Data-driven precision for cinematic race broadcasts.**
+**Open-source Race Control for AI-powered sim-racing broadcasts.**
 
-Sim RaceCenter's Broadcast Agent orchestrates live sim-racing broadcasts: it interrogates session
-telemetry and directs replay/camera systems on the Driver's behalf, through natural-language intent
-resolved into deterministic, verifiable commands. This backend repository is Sim RaceCenter's
-open source MCP servers for racing simulators exposing each supported simulator's
-telemetry and control surface as [Model Context Protocol (MCP)](https://modelcontextprotocol.io)
-servers, plus the Director Console that runs them on the Rig.
+[Sim RaceCenter](https://www.simracecenter.com/) is an ecosystem for turning live simulator
+telemetry into cinematic race broadcasts. The hosted product brings together the Broadcast Agent,
+Director Console, overlays, replay workflows, and race-intelligence services; this repository is
+the open-source Race Control layer that lets those systems talk to racing simulators through
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 
-Status: **early development**. Design decisions live in [docs/adr](docs/adr/) (start with
-[ADR 0001](docs/adr/0001-project-layout.md)) and the
+These MCP servers can run as part of the larger Sim RaceCenter platform, or standalone for anyone
+building their own local tools, agents, automations, overlays, or broadcast workflows. Each
+supported simulator exposes telemetry and control capabilities through a deterministic MCP API,
+with verification loops for mutating commands where the simulator makes that possible.
+
+Status: **early development**. Learn more about the product at
+[simracecenter.com](https://www.simracecenter.com/). Design decisions live in
+[docs/adr](docs/adr/) (start with [ADR 0001](docs/adr/0001-project-layout.md)) and the
 [project board](https://github.com/orgs/simracecenter/projects/1).
 
-## What's here
+## What's Here
 
 ```
 simulator-mcp-servers/
@@ -30,13 +35,25 @@ simulator-mcp-servers/
 │   ├── iracing-mcp/   # iRacing telemetry + replay/camera control MCP server.
 │   ├── lmu-mcp/       # Le Mans Ultimate MCP server.
 │   └── launcher/      # The Director Console: CLI + singleton runner + settings web UI,
-│                       # hosts exactly one active simulator's MCP server at a time.
+│                       # hosts exactly one active simulator MCP server at a time.
 └── e2e/               # Playwright end-to-end tests for the launcher's settings UI.
 ```
 
+## How It Fits
 
+Sim RaceCenter has three layers:
 
-## Getting started
+- **Race Control** — this repository: local MCP servers, simulator adapters, verification logic,
+  and the Windows Director Console that runs on the Rig.
+- **Broadcast Agent** — the AI orchestrator that consumes Race Control tools and decides what the
+  audience should see next.
+- **Product experience** — the web, overlay, replay, and account surfaces described at
+  [simracecenter.com](https://www.simracecenter.com/).
+
+You do not need the hosted product to use this code. Run a simulator MCP server locally, connect an
+MCP-capable client or agent, and build against the same tool surface that powers Sim RaceCenter.
+
+## Getting Started
 
 Development happens in the provided dev container (Linux, cross-compiling to Windows):
 
@@ -58,23 +75,25 @@ npm ci
 npx playwright test
 ```
 
-The Director Console (`launcher`) only runs meaningfully on Windows, next to a running simulator —
-its SDK adapters use local shared memory and Win32 broadcast messages that don't exist on Linux.
+The Director Console (`launcher`) only runs meaningfully on Windows, next to a running simulator.
+Its SDK adapters use local shared memory and Win32 broadcast messages that do not exist on Linux.
 Linux/dev-container work verifies logic against stub adapters and cross-compilation, and the
-`e2e/` Playwright suite drives the settings UI headless on Linux; end-to-end verification with a
-live sim still happens on a Windows Rig.
+`e2e/` Playwright suite drives the settings UI headless on Linux. End-to-end verification with a
+live simulator still happens on a Windows Rig.
 
 ## Documentation
 
 | Document | Purpose |
 | --- | --- |
+| [simracecenter.com](https://www.simracecenter.com/) | Product overview for the broader Sim RaceCenter ecosystem |
+| [How It Works](https://www.simracecenter.com/how-it-works) | Conceptual product flow and hosted experience |
 | [docs/adr](docs/adr/) | Architectural Decision Records (start with [ADR 0001](docs/adr/0001-project-layout.md)) |
 | [docs/iracing-mcp-server.md](docs/iracing-mcp-server.md) | The `iracing-mcp` server: why it exists, its full tool reference, and the technical approach — also the reference pattern for new `<sim>-mcp` adapters |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to propose changes, coding standards, DCO sign-off |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community expectations |
 | [SECURITY.md](SECURITY.md) | How to report a vulnerability |
 
-## Naming & voice
+## Naming & Voice
 
 User-facing copy (UI text, CLI help, log/error messages, docs) follows Sim RaceCenter's brand
 protocol: professional, technical, crisp — data, not drama. In that copy, use:
