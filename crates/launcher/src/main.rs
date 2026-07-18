@@ -91,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let settings_bind = cli.settings_bind;
+    let settings_url = format!("http://{}/", settings_bind);
     let settings_handle = tokio::spawn(async move {
         if let Err(error) = settings_server::run(&settings_bind, settings_state).await {
             error!(%error, "settings server task exited");
@@ -107,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(())
     } else {
-        let tray = ui::tray::build()?;
+        let tray = ui::tray::build(settings_url)?;
         tray.run()?;
         Ok(())
     }
