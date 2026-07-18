@@ -22,39 +22,57 @@ mod imp {
 
     /// "Director Console" — Sim RaceCenter's name for the main control
     /// interface (never "Admin Panel"; see the brand & voice guide).
+    ///
+    /// The tray icon is the resident launcher surface. Left-click opens the web
+    /// Director Console; right-click shows a menu with Launch/Quit actions. No
+    /// visible native window is shown.
     #[derive(Default, NwgUi)]
     pub struct TrayUi {
-        #[nwg_control(size: (320, 160), position: (300, 300), title: "Director Console")]
-        #[nwg_events(OnWindowClose: [nwg::stop_thread_dispatch()])]
-        window: nwg::Window,
-
-        #[nwg_control(text: "Open Director Console", size: (220, 40), position: (50, 40), parent: window)]
-        #[nwg_events(OnButtonClick: [TrayUi::open_web_ui])]
-        open_button: nwg::Button,
-
         #[nwg_resource(source_bin: Some(include_bytes!("../../assets/logo.ico")))]
         icon: nwg::Icon,
 
-        #[nwg_control(icon: Some(&data.icon), tip: Some("Sim RaceCenter — Director Console"))]
-        #[nwg_events(MousePressLeftUp: [TrayUi::show_window])]
+        #[nwg_control]
+        message_window: nwg::MessageWindow,
+
+        #[nwg_control(parent: message_window, icon: Some(&data.icon), tip: Some("Sim RaceCenter — Director Console"))]
+        #[nwg_events(
+            MousePressLeftUp: [TrayUi::open_web_ui],
+            OnContextMenu: [TrayUi::show_menu]
+        )]
         tray: nwg::TrayNotification,
+
+        #[nwg_control(parent: message_window, popup: true)]
+        tray_menu: nwg::Menu,
+
+        #[nwg_control(parent: tray_menu, text: "Launch Director Console")]
+        #[nwg_events(OnMenuItemSelected: [TrayUi::open_web_ui])]
+        launch_item: nwg::MenuItem,
+
+        #[nwg_control(parent: tray_menu, text: "Quit")]
+        #[nwg_events(OnMenuItemSelected: [TrayUi::quit])]
+        quit_item: nwg::MenuItem,
     }
 
     impl TrayUi {
-        fn show_window(&self) {
-            self.window.set_visible(true);
+        /// Show the tray context menu at the current cursor position.
+        fn show_menu(&self) {
+            let (x, y) = nwg::GlobalCursor::position();
+            self.tray_menu.popup(x, y);
         }
 
+        /// Open the Director Console in the user's default browser.
         fn open_web_ui(&self) {
             if let Some(url) = SETTINGS_URL.get() {
                 if let Err(error) = open::that(url) {
-                    nwg::modal_error_message(
-                        &self.window,
-                        "Could not open Director Console",
-                        &error.to_string(),
-                    );
+                    let message = format!("Could not open Director Console: {error}");
+                    self.tray.show(&message, Some("Sim RaceCenter"), None, None);
                 }
             }
+        }
+
+        /// Stop the message loop so the launcher can shut down cleanly.
+        fn quit(&self) {
+            nwg::stop_thread_dispatch();
         }
     }
 

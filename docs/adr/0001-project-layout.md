@@ -112,6 +112,17 @@ identical runner/config/singleton path — one code path for both interactive an
 The settings server is also active in `--headless` mode, so external scripts can query or change
 the active simulator without depending on the MCP transport type.
 
+**Update (2026-07-18):** the Windows tray UI is now the **resident launcher surface** and the
+local **settings web UI is the primary user interface**. The launcher no longer shows a separate
+visible native window on startup. Instead, the `native-windows-gui` tray icon uses a hidden
+`MessageWindow` as its parent, and left-clicking the tray opens the Director Console in the
+system's default browser. Right-clicking the tray opens a context menu with **Launch Director
+Console** and **Quit**. The web UI continues to be served by the `axum` settings server and is the
+main point of interaction for selecting the active simulator; the tray UI is now the lightweight
+resident launcher that keeps the process running and gives the Driver quick launch/quit access.
+This remains compatible with the original low-resource rationale: no browser engine or WebView2
+runtime is bundled.
+
 **Rejected alternatives:**
 - *Separate binary per server, launcher spawns children* — better crash isolation, but adds a
   supervision layer (respawn policy, IPC for status) for a scenario (two sims running at once)

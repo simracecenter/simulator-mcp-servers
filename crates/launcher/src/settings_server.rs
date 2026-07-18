@@ -3,10 +3,11 @@
 //!
 //! Serves a single static HTML page that lets the Driver select the active
 //! simulator. Endpoints:
-//! - `GET /`         — the settings UI.
-//! - `GET /healthz`  — liveness check.
-//! - `GET /api/status`  — active sim, connection status, and live tool names.
-//! - `POST /api/sim`    — persist selection and hot-swap the in-process handler.
+//! - `GET /`              — the settings UI.
+//! - `GET /favicon.ico`   — the Sim RaceCenter logo as a Windows `.ico`.
+//! - `GET /healthz`       — liveness check.
+//! - `GET /api/status`    — active sim, connection status, and live tool names.
+//! - `POST /api/sim`      — persist selection and hot-swap the in-process handler.
 //!
 //! The server binds loopback by default and has no authentication, matching
 //! the MCP HTTP transport's trust model (SECURITY.md).
@@ -14,9 +15,10 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Body,
     extract::State,
-    http::StatusCode,
-    response::Html,
+    http::{header, StatusCode},
+    response::{Html, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -58,11 +60,13 @@ struct Status {
 }
 
 const INDEX_HTML: &str = include_str!("settings_page.html");
+const FAVICON_ICO: &[u8] = include_bytes!("../assets/logo.ico");
 
 /// Start the settings server and block until it exits.
 pub async fn run(bind: &str, state: Arc<SettingsState>) -> std::io::Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/favicon.ico", get(favicon))
         .route("/healthz", get(healthz))
         .route("/api/status", get(api_status))
         .route("/api/sim", post(api_sim))
@@ -76,6 +80,13 @@ pub async fn run(bind: &str, state: Arc<SettingsState>) -> std::io::Result<()> {
 
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn favicon() -> Response<Body> {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "image/x-icon")
+        .body(Body::from(FAVICON_ICO))
+        .unwrap()
 }
 
 async fn healthz() -> Json<Value> {

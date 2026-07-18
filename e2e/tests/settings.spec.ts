@@ -209,6 +209,25 @@ test.describe('settings UI', () => {
     }
   });
 
+  test('serves the Sim RaceCenter favicon', async () => {
+    const appDataDir = tmpAppDataDir();
+    const settingsPort = await getFreePort();
+    const child = spawnLauncher(appDataDir, settingsPort);
+
+    try {
+      await waitForServer(settingsPort);
+
+      const res = await fetch(`http://127.0.0.1:${settingsPort}/favicon.ico`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('image/x-icon');
+      const body = await res.arrayBuffer();
+      expect(body.byteLength).toBeGreaterThan(0);
+    } finally {
+      await killProcess(child);
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    }
+  });
+
   test('persistence across restart: LMU', async ({ page }) => {
     const appDataDir = tmpAppDataDir();
     const settingsPort = await getFreePort();
