@@ -103,8 +103,9 @@ the native tray UI, not a replacement — the tray UI continues to work unchange
 `config.toml` and hot-swaps the in-process MCP handler. The handler itself is wrapped by a
 `SwappableHandler` (a `McpHandler` that delegates to an `Arc<dyn McpHandler>`) so the MCP transport
 is wired once at startup and only the inner handler is replaced on switch, preserving the
-single-active-simulator invariant (ADR 0003). Like the MCP HTTP transport, the settings server
-binds loopback by default because it has no authentication.
+single-active-simulator invariant (ADR 0003). The settings server binds loopback by default because
+it has no authentication and only needs to be driven from the Rig; the MCP HTTP transport's default
+bind changed later (see the 2026-07-19 update below).
 
 Scripted automation (PowerShell, Stream Deck) uses the same binary in headless mode
 (`--sim iracing --headless` or similar), skipping the tray/window entirely but going through the
@@ -122,6 +123,22 @@ main point of interaction for selecting the active simulator; the tray UI is now
 resident launcher that keeps the process running and gives the Driver quick launch/quit access.
 This remains compatible with the original low-resource rationale: no browser engine or WebView2
 runtime is bundled.
+
+**Update (2026-07-19):** the launcher's **default MCP transport is now `http`, bound to
+`0.0.0.0:8765`** (previously `stdio`, and HTTP previously defaulted to loopback `127.0.0.1:8765`).
+The normal Race Control deployment runs the simulator MCP server on the Rig (it needs local SDK /
+shared-memory / broadcast-message access) while the Broadcast Agent runs on separate hardware, so
+the previous loopback-only default produced a released exe that looked healthy on the Rig but was
+unreachable by the agent that actually needed it (issue #28). The default therefore favours the
+real topology: a Driver runs the exe and the agent connects at `http://<rig-lan-ip>:8765/mcp` with
+no hidden flags. Because the transport is unauthenticated (SECURITY.md), this deliberately widens
+exposure from same-machine to LAN-reachable; that tradeoff is handled explicitly rather than hidden
+— CLI help documents it, README/SECURITY.md describe the trust model, and the launcher logs a
+warning at startup when the MCP transport is bound to a non-loopback address. `--bind
+127.0.0.1:8765` (or `--transport stdio`) restores same-machine-only behaviour. The **settings HTTP
+server keeps its loopback default** (`127.0.0.1:8766`): it only needs to be driven from the Rig, so
+the two binds are decided independently. A host allowlist / token authentication remains a possible
+follow-up if LAN reachability proves insufficient.
 
 **Rejected alternatives:**
 - *Separate binary per server, launcher spawns children* — better crash isolation, but adds a

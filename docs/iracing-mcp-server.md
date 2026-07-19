@@ -229,7 +229,11 @@ same gap before assuming "opens" means "live."
   agent runners that spawn the server as a child process.
 - **HTTP** (`transport::http::run_http`) — `POST /mcp` (JSON-RPC) + `GET /healthz`, for remote/LAN
   agent hosts. `build_router` is exposed separately so it can be exercised in tests without binding
-  a real socket.
+  a real socket. This is the launcher's **default** transport, bound to `0.0.0.0:8765`, because the
+  Rig-local-server + remote-agent split is the normal deployment; a remote agent connects at
+  `http://<rig-lan-ip>:8765/mcp`. The transport is unauthenticated — see
+  [SECURITY.md](../SECURITY.md) for the LAN trust model, and pass `--bind 127.0.0.1:8765` to keep it
+  same-machine only.
 
 `IracingMcpHandler::handle` implements the `McpHandler` trait and only understands three JSON-RPC
 methods: `initialize` (protocol/version/capabilities handshake), `tools/list` (returns the
