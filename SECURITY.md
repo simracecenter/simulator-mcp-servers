@@ -21,12 +21,19 @@ We'll acknowledge reports as quickly as we can and keep you updated as a fix is 
 
 ## Known trust-model considerations
 
-- The Director Console (`launcher`) and each simulator's MCP server are designed to run on the same
-  machine as the simulator, trusted by a single Driver/Rig. They are not designed to be exposed
-  directly to the public internet.
-- The optional HTTP transport (as opposed to stdio) is intended for LAN use by a trusted Broadcast
-  Agent host. If you run it, bind it to a trusted network interface/segment and do not port-forward
-  it to the internet.
+- The Director Console (`launcher`) and each simulator's MCP server run on the Rig, next to the
+  simulator, trusted by a single Driver. They are not designed to be exposed directly to the public
+  internet.
+- The MCP transport **defaults to HTTP bound to `0.0.0.0:8765`**, i.e. reachable from other hosts on
+  the LAN. This is intentional: the common topology runs the server on the Rig while the Broadcast
+  Agent runs on separate hardware, so a loopback-only default would be unreachable by the agent that
+  needs it. The transport is **unauthenticated**, so treat "on the network" as "able to invoke every
+  tool": run it only on a trusted network interface/segment and never port-forward it to the
+  internet. To restrict it to same-machine clients, launch with a loopback bind
+  (`--bind 127.0.0.1:8765`) or use `--transport stdio`. The launcher logs a warning at startup when
+  the MCP transport is bound to a non-loopback address.
+- The settings HTTP server (Director Console UI) is separate and still binds loopback
+  (`127.0.0.1:8766`) by default, because it only needs to be driven from the Rig itself.
 - Mutating MCP tools translate into simulator SDK broadcast messages and are verified against
   telemetry, but that verification is a correctness mechanism, not an authorization mechanism —
   anything that can reach the transport can invoke any tool it exposes.

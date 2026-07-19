@@ -82,11 +82,18 @@ function spawnLauncher(
   settingsPort: number,
   extraArgs: string[] = []
 ): ChildProcess {
-  return spawn(
-    LAUNCHER,
-    ['--headless', '--settings-bind', `127.0.0.1:${settingsPort}`, ...extraArgs],
-    { env: { ...process.env, APPDATA: appDataDir } }
-  );
+  // The launcher now defaults its MCP transport to `http` on the shared
+  // `0.0.0.0:8765` port; these tests only exercise the settings server, so
+  // fall back to `stdio` unless a test explicitly configures the transport,
+  // avoiding fixed-port collisions between parallel workers.
+  const args = ['--headless', '--settings-bind', `127.0.0.1:${settingsPort}`];
+  if (!extraArgs.includes('--transport')) {
+    args.push('--transport', 'stdio');
+  }
+  args.push(...extraArgs);
+  return spawn(LAUNCHER, args, {
+    env: { ...process.env, APPDATA: appDataDir },
+  });
 }
 
 async function killProcess(child: ChildProcess): Promise<void> {

@@ -80,6 +80,21 @@ npm ci
 npx playwright test
 ```
 
+### Connecting a remote Broadcast Agent
+
+The simulator MCP server must run on the Rig (it needs local SDK / shared-memory / broadcast-message
+access), but the Broadcast Agent that consumes its tools usually runs on separate hardware. To
+support that topology out of the box, `simracecenter-launcher.exe` **defaults to the HTTP transport
+bound to `0.0.0.0:8765`** — reachable from other hosts on the LAN — so a Driver can just run the exe
+on the Rig and point the agent at `http://<rig-lan-ip>:8765/mcp`. No hidden `--transport http --bind
+0.0.0.0:8765` flags are required.
+
+That default trades same-machine-only exposure for LAN reachability, and the transport is
+**unauthenticated** — anything that can reach it can invoke any tool. Run it only on a trusted
+network segment and **never port-forward it to the internet** (see [SECURITY.md](SECURITY.md)). To
+restrict the server to the Rig itself, launch with `--bind 127.0.0.1:8765`, or use `--transport
+stdio` when an MCP client spawns the server as a local child process.
+
 The Director Console (`launcher`) only runs meaningfully on Windows, next to a running simulator.
 Its SDK adapters use local shared memory and Win32 broadcast messages that do not exist on Linux.
 Linux/dev-container work verifies logic against stub adapters and cross-compilation, and the
