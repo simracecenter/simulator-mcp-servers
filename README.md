@@ -89,6 +89,11 @@ bound to `0.0.0.0:8765`** — reachable from other hosts on the LAN — so a Dri
 on the Rig and point the agent at `http://<rig-lan-ip>:8765/mcp`. No hidden `--transport http --bind
 0.0.0.0:8765` flags are required.
 
+`/mcp` speaks the MCP **Streamable HTTP** transport: `POST` for JSON-RPC, `GET` with
+`Accept: text/event-stream` for the server-to-client SSE stream, and `DELETE` to end a session,
+all keyed by the `Mcp-Session-Id` header issued on `initialize`
+(see [docs/adr/0004-mcp-streamable-http-transport.md](docs/adr/0004-mcp-streamable-http-transport.md)).
+
 That default trades same-machine-only exposure for LAN reachability, and the transport is
 **unauthenticated** — anything that can reach it can invoke any tool. Run it only on a trusted
 network segment and **never port-forward it to the internet** (see [SECURITY.md](SECURITY.md)). To
