@@ -5,4 +5,5 @@
 //! remote/LAN agent hosts — ADR 0001 §2.1).
 
 pub mod http;
+pub mod session;
 pub mod stdio;
