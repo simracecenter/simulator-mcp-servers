@@ -746,18 +746,31 @@ impl IracingMcpHandler {
         )
         .await;
 
-        respond_verify_outcome(
+        respond_verify_outcome_classified(
             id,
             "replay_search_event",
             outcome,
             json!({}),
             json!({}),
-            || {
-                format!(
-                    "Replay search mode={:?} did not produce expected movement within {}ms.",
-                    mode,
-                    timeout.as_millis()
-                )
+            |before, observed| {
+                if replay_did_not_move(before, observed) {
+                    (
+                        "no_movement",
+                        format!(
+                            "Replay search mode={mode:?} was accepted but the replay did not move \
+                             — iRacing reported no matching event."
+                        ),
+                    )
+                } else {
+                    (
+                        "timeout",
+                        format!(
+                            "Replay search mode={:?} did not produce expected movement within {}ms.",
+                            mode,
+                            timeout.as_millis()
+                        ),
+                    )
+                }
             },
         )
     }
@@ -1107,6 +1120,28 @@ fn respond_verify_outcome(
     timeout_extra: Value,
     timeout_reason: impl FnOnce() -> String,
 ) -> JsonRpcResponse {
+    respond_verify_outcome_classified(
+        id,
+        tool_name,
+        outcome,
+        verified_extra,
+        timeout_extra,
+        |_before, _observed| ("timeout", timeout_reason()),
+    )
+}
+
+/// [`respond_verify_outcome`] for tools that need more than one unverified
+/// `error.code`: `classify_timeout` inspects the `before`/`observed` states
+/// and returns the `error.code` plus the `reason` used for both
+/// `data.reason` and `error.message`.
+fn respond_verify_outcome_classified(
+    id: Option<Value>,
+    tool_name: &str,
+    outcome: Result<VerifyOutcome<ReplayState>, AdapterError>,
+    verified_extra: Value,
+    timeout_extra: Value,
+    classify_timeout: impl FnOnce(&ReplayState, &ReplayState) -> (&'static str, String),
+) -> JsonRpcResponse {
     match outcome {
         Ok(VerifyOutcome::Verified {
             before,
@@ -1129,7 +1164,7 @@ fn respond_verify_outcome(
             observed,
             elapsed,
         }) => {
-            let reason = timeout_reason();
+            let (code, reason) = classify_timeout(&before, &observed);
             let mut payload = json!({
                 "commandAccepted": true,
                 "verified": false,
@@ -1139,7 +1174,7 @@ fn respond_verify_outcome(
                 "elapsedMs": elapsed.as_millis()
             });
             merge_object(&mut payload, timeout_extra);
-            tool_verification_err(tool_name, id, "timeout", &reason, payload)
+            tool_verification_err(tool_name, id, code, &reason, payload)
         }
         Err(error) => tool_err(id, error_code(&error), &error.to_string()),
     }
@@ -1151,6 +1186,15 @@ fn merge_object(target: &mut Value, extra: Value) {
     if let (Some(target_map), Value::Object(extra_map)) = (target.as_object_mut(), extra) {
         target_map.extend(extra_map);
     }
+}
+
+/// Whether the replay timeline is exactly where it started: the sim accepted
+/// the search but had nothing to jump to (e.g. `prev_incident` with no
+/// incident behind the playhead). `replay_frame_num_end` is included so a
+/// still-growing replay buffer counts as movement.
+fn replay_did_not_move(before: &ReplayState, observed: &ReplayState) -> bool {
+    before.replay_frame_num == observed.replay_frame_num
+        && before.replay_frame_num_end == observed.replay_frame_num_end
 }
 
 fn verify_search_event_state(

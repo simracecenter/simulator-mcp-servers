@@ -84,7 +84,7 @@ Mutating; verified against `replay_get_state`-shaped telemetry. Require being ou
 | `replay_set_playback` | `speed` (int, required), `slowMotion?` (bool) | Sets replay playback speed (0 = paused) and verifies the telemetry reflects it. |
 | `replay_seek_session_time` | `sessionNum`, `sessionTimeMs` (int, required), `toleranceMs?` (int) | Seeks to a session-relative timestamp; verifies landing within tolerance (default tolerance is deliberately generous — see [Known limitations](#known-limitations-worth-carrying-into-new-adapters)). |
 | `replay_seek_frame` | `frame` (int, required), `mode?` (`begin` \| `current` \| `end`), `toleranceFrames?` (int) | Seeks to an absolute or mode-relative frame; verifies the observed frame. |
-| `replay_search_event` | `mode` (required): `to_start`, `to_end`, `prev_session`, `next_session`, `prev_lap`, `next_lap`, `prev_frame`, `next_frame`, `prev_incident`, `next_incident` | Semantic replay jump (iRacing's own "search" concept — laps, incidents, session boundaries) with movement verification. |
+| `replay_search_event` | `mode` (required): `to_start`, `to_end`, `prev_session`, `next_session`, `prev_lap`, `next_lap`, `prev_frame`, `next_frame`, `prev_incident`, `next_incident` | Semantic replay jump (iRacing's own "search" concept — laps, incidents, session boundaries) with movement verification. Distinguishes "nothing to jump to" from a slow/failed verification: a `no_movement` error means the search was accepted but the replay timeline never moved (e.g. `prev_incident` with no incident behind the playhead), while `timeout` means it did move but never satisfied the mode's verification predicate — a caller can branch on that to fall back to a different shot. |
 | `replay_show_window` | `sessionNum`, `startTimeMs`, `focusCarIdx` (required); `endTimeMs?`, `cameraGroupNum?`, `speed?` (default `1`), `timeoutMs?` (default `2000`) | **Composite** tool: seeks to `startTimeMs`, focuses the camera on `focusCarIdx`, sets playback speed, and — if `endTimeMs` is given — plays until that time then pauses. Each of those four steps is verified independently and reported in a `steps[]` array, so a partial failure is diagnosable rather than an opaque timeout. Built for "cue up and hold this clip" in one call instead of four. |
 
 ### Mode guard
@@ -124,6 +124,7 @@ extends this with a `steps[]` array, one entry per sub-command.
 | `missing_telemetry_var` / `invalid_telemetry_type` | A named SDK telemetry variable was absent or the wrong type — usually signals an SDK/version mismatch, not caller error. |
 | `broadcast_error` | The underlying Win32 broadcast-message send failed. |
 | `timeout` | A mutating tool's command was accepted but telemetry never verified it within the timeout — see [The verification loop](#the-verification-loop-command--poll--verify). |
+| `no_movement` | `replay_search_event` only: the search was accepted but the replay timeline (`replayFrameNum` and `replayFrameNumEnd`) never moved at all — iRacing had no matching event for the requested mode. Payload shape is identical to `timeout`. |
 
 ## Technical implementation
 

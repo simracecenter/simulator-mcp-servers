@@ -353,6 +353,68 @@ async fn replay_search_to_end_verifies_after_delayed_polls() {
 }
 
 #[tokio::test]
+async fn replay_search_prev_incident_reports_no_movement_when_replay_never_moves() {
+    // No script: the scripted adapter leaves the timeline untouched for
+    // `prev_incident`, mirroring iRacing finding no incident behind the
+    // playhead.
+    let adapter: Arc<dyn adapter::IracingAdapter> =
+        Arc::new(ScriptedAdapter::new(base_replay_state()));
+    let app = build_app(adapter);
+
+    let payload = call_tool_payload(
+        app,
+        "replay_search_event",
+        json!({ "mode": "prev_incident" }),
+    )
+    .await;
+
+    assert_eq!(payload["ok"], Value::Bool(false));
+    assert_eq!(payload["error"]["code"], Value::from("no_movement"));
+    assert_eq!(payload["data"]["commandAccepted"], Value::Bool(true));
+    assert_eq!(payload["data"]["verified"], Value::Bool(false));
+    assert_eq!(
+        payload["data"]["before"]["replayFrameNum"],
+        Value::from(6_000)
+    );
+    assert_eq!(
+        payload["data"]["observed"]["replayFrameNum"],
+        Value::from(6_000)
+    );
+    assert!(payload["data"]["elapsedMs"].is_number());
+    assert_eq!(payload["data"]["reason"], payload["error"]["message"]);
+}
+
+#[tokio::test]
+async fn replay_search_prev_incident_still_times_out_when_replay_moves_the_wrong_way() {
+    let initial = base_replay_state();
+    let adapter: Arc<dyn adapter::IracingAdapter> =
+        Arc::new(ScriptedAdapter::new(initial.clone()).with_script(
+            "replay_search_event",
+            vec![adapter::ReplayState {
+                replay_frame_num: 6_300,
+                replay_session_time: 105.0,
+                ..initial
+            }],
+        ));
+    let app = build_app(adapter);
+
+    let payload = call_tool_payload(
+        app,
+        "replay_search_event",
+        json!({ "mode": "prev_incident" }),
+    )
+    .await;
+
+    assert_eq!(payload["ok"], Value::Bool(false));
+    assert_eq!(payload["error"]["code"], Value::from("timeout"));
+    assert_eq!(payload["data"]["verified"], Value::Bool(false));
+    assert_eq!(
+        payload["data"]["observed"]["replayFrameNum"],
+        Value::from(6_300)
+    );
+}
+
+#[tokio::test]
 async fn replay_show_window_timeout_reports_step_level_verification() {
     let initial = base_replay_state();
     let paused_state = adapter::ReplayState {
