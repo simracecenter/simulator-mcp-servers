@@ -367,6 +367,46 @@ mod parsed_cache_tests {
     }
 }
 
+#[cfg(test)]
+mod track_surface_tests {
+    use super::{track_surface_details, track_surface_for_car};
+
+    #[test]
+    fn maps_all_known_track_surface_values() {
+        assert_eq!(
+            track_surface_details(-1),
+            (Some("NotInWorld".to_string()), Some(false))
+        );
+        assert_eq!(
+            track_surface_details(0),
+            (Some("OffTrack".to_string()), Some(true))
+        );
+        assert_eq!(
+            track_surface_details(1),
+            (Some("InPitStall".to_string()), Some(true))
+        );
+        assert_eq!(
+            track_surface_details(2),
+            (Some("AproachingPits".to_string()), Some(true))
+        );
+        assert_eq!(
+            track_surface_details(3),
+            (Some("OnTrack".to_string()), Some(true))
+        );
+    }
+
+    #[test]
+    fn unknown_track_surface_values_are_unavailable() {
+        assert_eq!(track_surface_details(99), (None, None));
+    }
+
+    #[test]
+    fn absent_track_surface_variable_is_unavailable() {
+        assert_eq!(track_surface_for_car(None, 0), (None, None));
+        assert_eq!(track_surface_for_car(Some(&[]), 0), (None, None));
+    }
+}
+
 #[cfg(windows)]
 #[async_trait]
 impl IracingAdapter for SdkAdapter {
@@ -985,6 +1025,7 @@ impl SdkAdapter {
         let on_pit_road = read_bool_vec(&telemetry, "CarIdxOnPitRoad")?;
         let est_times = read_f32_vec(&telemetry, "CarIdxEstTime")?;
         let f2_times = read_f32_vec(&telemetry, "CarIdxF2Time")?;
+        let track_surfaces = read_optional_i32_vec(&telemetry, "CarIdxTrackSurface")?;
 
         #[derive(Clone)]
         struct RawRelative {
@@ -995,6 +1036,8 @@ impl SdkAdapter {
             lap: i32,
             lap_dist_pct: Option<f64>,
             is_in_pit: bool,
+            track_surface: Option<String>,
+            in_world: Option<bool>,
             track_coord_sec: f64,
             estimated_time_sec: Option<f64>,
             f2_time_sec: Option<f64>,
@@ -1012,6 +1055,8 @@ impl SdkAdapter {
                     .copied()
                     .map(|value| value as f64);
                 let is_in_pit = on_pit_road.get(car_idx).copied().unwrap_or(false);
+                let (track_surface, in_world) =
+                    track_surface_for_car(track_surfaces.as_deref(), car_idx);
                 let estimated_time_sec = est_times.get(car_idx).copied().map(|value| value as f64);
                 let f2_time_sec = f2_times.get(car_idx).copied().map(|value| value as f64);
                 // For true on-track relatives, prefer the current track coordinate estimate.
@@ -1028,6 +1073,8 @@ impl SdkAdapter {
                     lap,
                     lap_dist_pct,
                     is_in_pit,
+                    track_surface,
+                    in_world,
                     track_coord_sec,
                     estimated_time_sec,
                     f2_time_sec,
@@ -1104,6 +1151,8 @@ impl SdkAdapter {
                 delta_laps: leader_lap.saturating_sub(current.lap),
                 estimated_time_sec: current.estimated_time_sec,
                 f2_time_sec: current.f2_time_sec,
+                track_surface: current.track_surface.clone(),
+                in_world: current.in_world,
             });
         }
 
@@ -1218,6 +1267,48 @@ fn read_i32_vec(
         Value::IntVec(values) => Ok(values),
         Value::INT(value) => Ok(vec![value]),
         _ => Err(AdapterError::InvalidTelemetryType(name)),
+    }
+}
+
+#[cfg(windows)]
+fn read_optional_i32_vec(
+    sample: &iracing::telemetry::Sample,
+    name: &'static str,
+) -> Result<Option<Vec<i32>>, AdapterError> {
+    match sample.get(name) {
+        Err(_) => Ok(None),
+        Ok(Value::IntVec(values)) => Ok(Some(values)),
+        Ok(Value::INT(value)) => Ok(Some(vec![value])),
+        Ok(_) => Err(AdapterError::InvalidTelemetryType(name)),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn track_surface_for_car(
+    track_surfaces: Option<&[i32]>,
+    car_idx: usize,
+) -> (Option<String>, Option<bool>) {
+    track_surfaces
+        .and_then(|values| values.get(car_idx).copied())
+        .map(track_surface_details)
+        .unwrap_or((None, None))
+}
+
+#[cfg(any(windows, test))]
+fn track_surface_details(raw_value: i32) -> (Option<String>, Option<bool>) {
+    match raw_value {
+        -1 => (Some("NotInWorld".to_string()), Some(false)),
+        0 => (Some("OffTrack".to_string()), Some(true)),
+        1 => (Some("InPitStall".to_string()), Some(true)),
+        2 => (Some("AproachingPits".to_string()), Some(true)),
+        3 => (Some("OnTrack".to_string()), Some(true)),
+        value => {
+            #[cfg(windows)]
+            tracing::debug!(raw_value = value, "unknown iRacing track surface value");
+            #[cfg(not(windows))]
+            let _ = value;
+            (None, None)
+        }
     }
 }
 

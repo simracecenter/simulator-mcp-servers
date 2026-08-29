@@ -323,6 +323,8 @@ impl IracingAdapter for StubAdapter {
                 delta_laps: 0,
                 estimated_time_sec: Some(93.1),
                 f2_time_sec: Some(0.0),
+                track_surface: Some("OnTrack".to_string()),
+                in_world: Some(true),
             },
             RelativeEntry {
                 position: 2,
@@ -338,6 +340,8 @@ impl IracingAdapter for StubAdapter {
                 delta_laps: 0,
                 estimated_time_sec: Some(94.0),
                 f2_time_sec: Some(0.842),
+                track_surface: Some("InPitStall".to_string()),
+                in_world: Some(true),
             },
         ];
 

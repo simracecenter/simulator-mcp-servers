@@ -155,6 +155,8 @@ pub struct RelativeEntry {
     pub delta_laps: i32,
     pub estimated_time_sec: Option<f64>,
     pub f2_time_sec: Option<f64>,
+    pub track_surface: Option<String>,
+    pub in_world: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
