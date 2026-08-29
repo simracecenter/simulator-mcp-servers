@@ -37,6 +37,7 @@
 //!   Amendment open follow-ups.
 
 use async_trait::async_trait;
+use mcp_core::SnapshotMeta;
 use serde::Deserialize;
 
 use super::{
@@ -237,6 +238,10 @@ impl SdkAdapter {
 
 #[async_trait]
 impl LmuAdapter for SdkAdapter {
+    async fn snapshot_meta(&self) -> SnapshotMeta {
+        SnapshotMeta::unavailable()
+    }
+
     async fn get_session_overview(&self) -> SessionOverview {
         match (
             self.fetch_session_info().await,

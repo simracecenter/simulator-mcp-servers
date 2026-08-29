@@ -238,6 +238,7 @@ pub enum AdapterError {
 
 #[async_trait]
 pub trait LmuAdapter: Send + Sync {
+    async fn snapshot_meta(&self) -> mcp_core::SnapshotMeta;
     // Read path — an HTTP client against LMU's local REST API
     // (127.0.0.1:6397), per ADR 0002's Amendment.
     async fn get_session_overview(&self) -> SessionOverview;

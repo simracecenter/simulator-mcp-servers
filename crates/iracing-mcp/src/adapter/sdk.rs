@@ -6,6 +6,7 @@
 //! canonical and becomes this file.
 
 use async_trait::async_trait;
+use mcp_core::{Read, SnapshotMeta};
 
 #[cfg(windows)]
 use iracing::telemetry::Value;
@@ -168,8 +169,6 @@ impl SessionRevisionTracker {
 
 #[cfg(any(windows, test))]
 #[derive(Clone)]
-// These fields and helpers are consumed by the forthcoming `meta` envelope work.
-#[allow(dead_code)]
 pub(crate) struct TelemetrySnapshot {
     pub(crate) connected: bool,
     pub(crate) session_tick: i32,
@@ -178,7 +177,6 @@ pub(crate) struct TelemetrySnapshot {
     pub(crate) captured_at_unix_ms: u64,
     pub(crate) session_key: String,
     pub(crate) session_revision: u64,
-    pub(crate) session_info_update: i32,
     pub(crate) session_document: Arc<YamlValue>,
     pub(crate) replay_state: ReplayState,
     pub(crate) session_num: i32,
@@ -192,8 +190,6 @@ pub(crate) struct TelemetrySnapshot {
 }
 
 #[cfg(any(windows, test))]
-// These helpers are consumed by the forthcoming `meta` envelope work.
-#[allow(dead_code)]
 impl TelemetrySnapshot {
     pub(crate) fn age(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.captured_at)
@@ -205,8 +201,6 @@ impl TelemetrySnapshot {
 }
 
 #[cfg(any(windows, test))]
-// This threshold is consumed by the forthcoming `meta` envelope work.
-#[allow(dead_code)]
 const SNAPSHOT_STALE_AFTER: Duration = Duration::from_millis(250);
 
 #[cfg(windows)]
@@ -240,6 +234,47 @@ fn replay_state_from_snapshot(snapshot: &TelemetrySnapshot) -> Result<ReplayStat
     let mut state = snapshot.replay_state.clone();
     state.connected = snapshot.connected;
     Ok(state)
+}
+
+#[cfg(any(windows, test))]
+fn snapshot_meta_from_snapshot(snapshot: &TelemetrySnapshot) -> SnapshotMeta {
+    let now = Instant::now();
+    SnapshotMeta {
+        session_tick: Some(snapshot.session_tick),
+        session_time: Some(snapshot.session_time),
+        captured_at_unix_ms: Some(snapshot.captured_at_unix_ms),
+        age_ms: Some(snapshot.age(now).as_millis() as u64),
+        stale: Some(snapshot.stale(now)),
+        session_key: Some(snapshot.session_key.clone()),
+        session_revision: Some(snapshot.session_revision),
+        server_elapsed_ms: 0,
+    }
+}
+
+fn empty_snapshot_meta() -> SnapshotMeta {
+    SnapshotMeta {
+        session_tick: None,
+        session_time: None,
+        captured_at_unix_ms: None,
+        age_ms: None,
+        stale: None,
+        session_key: None,
+        session_revision: None,
+        server_elapsed_ms: 0,
+    }
+}
+
+#[cfg(windows)]
+fn read_from_snapshot<T, F>(read: F) -> Result<Read<T>, AdapterError>
+where
+    F: FnOnce(&TelemetrySnapshot) -> Result<T, AdapterError>,
+{
+    let snapshot = snapshot_for_read()?;
+    let data = read(&snapshot)?;
+    Ok(Read {
+        data,
+        meta: snapshot_meta_from_snapshot(&snapshot),
+    })
 }
 
 #[cfg(windows)]
@@ -307,21 +342,24 @@ where
 #[cfg(not(windows))]
 #[async_trait]
 impl IracingAdapter for SdkAdapter {
-    async fn get_session_overview(&self) -> SessionOverview {
-        SessionOverview {
-            connected: false,
-            is_replay: false,
-            is_in_car: false,
-            session_name: "Disconnected".to_string(),
-            track_name: "Disconnected".to_string(),
+    async fn get_session_overview(&self) -> Read<SessionOverview> {
+        Read {
+            data: SessionOverview {
+                connected: false,
+                is_replay: false,
+                is_in_car: false,
+                session_name: "Disconnected".to_string(),
+                track_name: "Disconnected".to_string(),
+            },
+            meta: empty_snapshot_meta(),
         }
     }
 
-    async fn get_session_data(&self) -> Result<SessionData, AdapterError> {
+    async fn get_session_data(&self) -> Result<Read<SessionData>, AdapterError> {
         Err(Self::not_available())
     }
 
-    async fn get_replay_state(&self) -> Result<ReplayState, AdapterError> {
+    async fn get_replay_state(&self) -> Result<Read<ReplayState>, AdapterError> {
         Err(Self::not_available())
     }
 
@@ -366,7 +404,7 @@ impl IracingAdapter for SdkAdapter {
         Err(Self::not_available())
     }
 
-    async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError> {
+    async fn get_weekend_info(&self) -> Result<Read<WeekendInfo>, AdapterError> {
         Err(Self::not_available())
     }
 
@@ -374,19 +412,22 @@ impl IracingAdapter for SdkAdapter {
         &self,
         _include_spectators: bool,
         _include_pace_car: bool,
-    ) -> Result<Roster, AdapterError> {
+    ) -> Result<Read<Roster>, AdapterError> {
         Err(Self::not_available())
     }
 
-    async fn get_camera_groups(&self) -> Result<CameraGroupList, AdapterError> {
+    async fn get_camera_groups(&self) -> Result<Read<CameraGroupList>, AdapterError> {
         Err(Self::not_available())
     }
 
-    async fn get_standings(&self, _session_num: Option<i32>) -> Result<Standings, AdapterError> {
+    async fn get_standings(
+        &self,
+        _session_num: Option<i32>,
+    ) -> Result<Read<Standings>, AdapterError> {
         Err(Self::not_available())
     }
 
-    async fn get_relatives(&self) -> Result<Relatives, AdapterError> {
+    async fn get_relatives(&self) -> Result<Read<Relatives>, AdapterError> {
         Err(Self::not_available())
     }
 
@@ -394,8 +435,12 @@ impl IracingAdapter for SdkAdapter {
         &self,
         _query: &str,
         _limit: usize,
-    ) -> Result<ResolveDriverResult, AdapterError> {
+    ) -> Result<Read<ResolveDriverResult>, AdapterError> {
         Err(Self::not_available())
+    }
+
+    async fn snapshot_meta(&self) -> SnapshotMeta {
+        empty_snapshot_meta()
     }
 }
 
@@ -424,11 +469,11 @@ mod tests {
         let adapter = SdkAdapter;
         let overview = adapter.get_session_overview().await;
 
-        assert!(!overview.connected);
-        assert!(!overview.is_replay);
-        assert!(!overview.is_in_car);
-        assert_eq!(overview.session_name, "Disconnected");
-        assert_eq!(overview.track_name, "Disconnected");
+        assert!(!overview.data.connected);
+        assert!(!overview.data.is_replay);
+        assert!(!overview.data.is_in_car);
+        assert_eq!(overview.data.session_name, "Disconnected");
+        assert_eq!(overview.data.track_name, "Disconnected");
 
         assert_not_available(adapter.get_session_data().await);
         assert_not_available(adapter.get_replay_state().await);
@@ -538,7 +583,6 @@ DriverInfo:
             captured_at_unix_ms: 1000,
             session_key: "123:456:2".to_string(),
             session_revision: 0,
-            session_info_update: 1,
             session_document: Arc::new(document),
             replay_state,
             session_num: 2,
@@ -562,6 +606,20 @@ DriverInfo:
         assert!(!value.stale(now));
         value.captured_at = now - Duration::from_millis(251);
         assert!(value.stale(now));
+    }
+
+    #[test]
+    fn snapshot_metadata_uses_snapshot_fields_and_staleness() {
+        let value = snapshot();
+        let meta = snapshot_meta_from_snapshot(&value);
+
+        assert_eq!(meta.session_tick, Some(42));
+        assert_eq!(meta.session_time, Some(12.5));
+        assert_eq!(meta.captured_at_unix_ms, Some(1000));
+        assert_eq!(meta.session_key.as_deref(), Some("123:456:2"));
+        assert_eq!(meta.session_revision, Some(0));
+        assert_eq!(meta.stale, Some(false));
+        assert!(meta.age_ms.is_some());
     }
 
     #[test]
@@ -668,15 +726,15 @@ DriverInfo:
 #[cfg(windows)]
 #[async_trait]
 impl IracingAdapter for SdkAdapter {
-    async fn get_session_overview(&self) -> SessionOverview {
+    async fn get_session_overview(&self) -> Read<SessionOverview> {
         SdkAdapter.get_session_overview_sync()
     }
 
-    async fn get_session_data(&self) -> Result<SessionData, AdapterError> {
+    async fn get_session_data(&self) -> Result<Read<SessionData>, AdapterError> {
         SdkAdapter.session_data_sync()
     }
 
-    async fn get_replay_state(&self) -> Result<ReplayState, AdapterError> {
+    async fn get_replay_state(&self) -> Result<Read<ReplayState>, AdapterError> {
         SdkAdapter.replay_state_sync()
     }
 
@@ -719,7 +777,7 @@ impl IracingAdapter for SdkAdapter {
             .await
     }
 
-    async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError> {
+    async fn get_weekend_info(&self) -> Result<Read<WeekendInfo>, AdapterError> {
         SdkAdapter.get_weekend_info_sync()
     }
 
@@ -727,19 +785,22 @@ impl IracingAdapter for SdkAdapter {
         &self,
         include_spectators: bool,
         include_pace_car: bool,
-    ) -> Result<Roster, AdapterError> {
+    ) -> Result<Read<Roster>, AdapterError> {
         SdkAdapter.get_roster_sync(include_spectators, include_pace_car)
     }
 
-    async fn get_camera_groups(&self) -> Result<CameraGroupList, AdapterError> {
+    async fn get_camera_groups(&self) -> Result<Read<CameraGroupList>, AdapterError> {
         SdkAdapter.get_camera_groups_sync()
     }
 
-    async fn get_standings(&self, session_num: Option<i32>) -> Result<Standings, AdapterError> {
+    async fn get_standings(
+        &self,
+        session_num: Option<i32>,
+    ) -> Result<Read<Standings>, AdapterError> {
         SdkAdapter.get_standings_sync(session_num)
     }
 
-    async fn get_relatives(&self) -> Result<Relatives, AdapterError> {
+    async fn get_relatives(&self) -> Result<Read<Relatives>, AdapterError> {
         SdkAdapter.get_relatives_sync()
     }
 
@@ -747,14 +808,21 @@ impl IracingAdapter for SdkAdapter {
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<ResolveDriverResult, AdapterError> {
+    ) -> Result<Read<ResolveDriverResult>, AdapterError> {
         SdkAdapter.resolve_driver_sync(query, limit)
+    }
+
+    async fn snapshot_meta(&self) -> SnapshotMeta {
+        match snapshot_for_read() {
+            Ok(snapshot) => snapshot_meta_from_snapshot(&snapshot),
+            Err(_) => empty_snapshot_meta(),
+        }
     }
 }
 
 #[cfg(windows)]
 impl SdkAdapter {
-    fn get_session_overview_sync(&self) -> SessionOverview {
+    fn get_session_overview_sync(&self) -> Read<SessionOverview> {
         // This tool never fails — a disconnected sim is a valid overview, not
         // an error — but the underlying reads can fail for reasons worth
         // knowing (unparseable session YAML, a missing telemetry var). Log
@@ -764,12 +832,15 @@ impl SdkAdapter {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 warn!(%error, "get_session_overview: snapshot unavailable");
-                return SessionOverview {
-                    connected: false,
-                    is_replay: false,
-                    is_in_car: false,
-                    session_name: "Disconnected".to_string(),
-                    track_name: "Disconnected".to_string(),
+                return Read {
+                    data: SessionOverview {
+                        connected: false,
+                        is_replay: false,
+                        is_in_car: false,
+                        session_name: "Disconnected".to_string(),
+                        track_name: "Disconnected".to_string(),
+                    },
+                    meta: empty_snapshot_meta(),
                 };
             }
         };
@@ -788,43 +859,46 @@ impl SdkAdapter {
             }
         };
 
-        SessionOverview {
-            connected: snapshot.connected,
-            is_replay: replay_state
-                .as_ref()
-                .map(ReplayState::is_replay)
-                .unwrap_or(false),
-            is_in_car: replay_state
-                .as_ref()
-                .map(|state| state.is_on_track || state.is_in_garage)
-                .unwrap_or(false),
-            session_name: session_data
-                .as_ref()
-                .map(|session| session.current_session_type.clone())
-                .unwrap_or_else(|| "Disconnected".to_string()),
-            track_name: session_data
-                .as_ref()
-                .map(|session| session.track_display_name.clone())
-                .unwrap_or_else(|| "Disconnected".to_string()),
+        Read {
+            data: SessionOverview {
+                connected: snapshot.connected,
+                is_replay: replay_state
+                    .as_ref()
+                    .map(ReplayState::is_replay)
+                    .unwrap_or(false),
+                is_in_car: replay_state
+                    .as_ref()
+                    .map(|state| state.is_on_track || state.is_in_garage)
+                    .unwrap_or(false),
+                session_name: session_data
+                    .as_ref()
+                    .map(|session| session.current_session_type.clone())
+                    .unwrap_or_else(|| "Disconnected".to_string()),
+                track_name: session_data
+                    .as_ref()
+                    .map(|session| session.track_display_name.clone())
+                    .unwrap_or_else(|| "Disconnected".to_string()),
+            },
+            meta: snapshot_meta_from_snapshot(&snapshot),
         }
     }
 
-    fn session_data_sync(&self) -> Result<SessionData, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        session_data_from_snapshot(&snapshot)
+    fn session_data_sync(&self) -> Result<Read<SessionData>, AdapterError> {
+        read_from_snapshot(session_data_from_snapshot)
     }
 
-    fn replay_state_sync(&self) -> Result<ReplayState, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        let state = replay_state_from_snapshot(&snapshot)?;
-        debug!(
-            "replay_state_sync: speed={} playing={} slow={} frame={} session_num={} session_time={:.3} cam_car={} cam_group={} cam_camera={} on_track={} in_garage={}",
-            state.replay_play_speed, state.is_replay_playing, state.replay_play_slow_motion,
-            state.replay_frame_num, state.replay_session_num, state.replay_session_time,
-            state.cam_car_idx, state.cam_group_number, state.cam_camera_number,
-            state.is_on_track, state.is_in_garage
-        );
-        Ok(state)
+    fn replay_state_sync(&self) -> Result<Read<ReplayState>, AdapterError> {
+        read_from_snapshot(|snapshot| {
+            let state = replay_state_from_snapshot(snapshot)?;
+            debug!(
+                "replay_state_sync: speed={} playing={} slow={} frame={} session_num={} session_time={:.3} cam_car={} cam_group={} cam_camera={} on_track={} in_garage={}",
+                state.replay_play_speed, state.is_replay_playing, state.replay_play_slow_motion,
+                state.replay_frame_num, state.replay_session_num, state.replay_session_time,
+                state.cam_car_idx, state.cam_group_number, state.cam_camera_number,
+                state.is_on_track, state.is_in_garage
+            );
+            Ok(state)
+        })
     }
 
     fn set_replay_playback_sync(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError> {
@@ -980,7 +1054,7 @@ impl SdkAdapter {
         result
     }
 
-    fn get_weekend_info_sync(&self) -> Result<WeekendInfo, AdapterError> {
+    fn get_weekend_info_sync(&self) -> Result<Read<WeekendInfo>, AdapterError> {
         let snapshot = snapshot_for_read()?;
         let root = &snapshot.session_document;
         let wi = |k: &str| -> String {
@@ -1025,7 +1099,7 @@ impl SdkAdapter {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0)
         };
-        Ok(WeekendInfo {
+        let data = WeekendInfo {
             track_name: wi("TrackName"),
             track_id: wi_i("TrackID"),
             track_display_name: wi("TrackDisplayName"),
@@ -1050,6 +1124,10 @@ impl SdkAdapter {
             surface_temp_c: weather_f("TempTrack"),
             air_temp_c: weather_f("TempAir"),
             wind_vel_ms: weather_f("WindVel"),
+        };
+        Ok(Read {
+            data,
+            meta: snapshot_meta_from_snapshot(&snapshot),
         })
     }
 
@@ -1057,42 +1135,48 @@ impl SdkAdapter {
         &self,
         include_spectators: bool,
         include_pace_car: bool,
-    ) -> Result<Roster, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        roster_from_document(
-            &snapshot.session_document,
-            include_spectators,
-            include_pace_car,
-        )
+    ) -> Result<Read<Roster>, AdapterError> {
+        read_from_snapshot(|snapshot| {
+            roster_from_document(
+                &snapshot.session_document,
+                include_spectators,
+                include_pace_car,
+            )
+        })
     }
 
-    fn get_camera_groups_sync(&self) -> Result<CameraGroupList, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        camera_groups_from_document(&snapshot.session_document)
+    fn get_camera_groups_sync(&self) -> Result<Read<CameraGroupList>, AdapterError> {
+        read_from_snapshot(|snapshot| camera_groups_from_document(&snapshot.session_document))
     }
 
-    fn get_standings_sync(&self, session_num: Option<i32>) -> Result<Standings, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        standings_from_document(
-            &snapshot.session_document,
-            session_num.unwrap_or(snapshot.session_num),
-        )
+    fn get_standings_sync(
+        &self,
+        session_num: Option<i32>,
+    ) -> Result<Read<Standings>, AdapterError> {
+        read_from_snapshot(|snapshot| {
+            standings_from_document(
+                &snapshot.session_document,
+                session_num.unwrap_or(snapshot.session_num),
+            )
+        })
     }
 
-    fn get_relatives_sync(&self) -> Result<Relatives, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        let roster = roster_from_document(&snapshot.session_document, false, false)?;
-        relatives_from_snapshot(&snapshot, &roster)
+    fn get_relatives_sync(&self) -> Result<Read<Relatives>, AdapterError> {
+        read_from_snapshot(|snapshot| {
+            let roster = roster_from_document(&snapshot.session_document, false, false)?;
+            relatives_from_snapshot(snapshot, &roster)
+        })
     }
 
     fn resolve_driver_sync(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<ResolveDriverResult, AdapterError> {
-        let snapshot = snapshot_for_read()?;
-        let roster = roster_from_document(&snapshot.session_document, false, false)?;
-        resolve_driver_from_roster(&roster, query, limit)
+    ) -> Result<Read<ResolveDriverResult>, AdapterError> {
+        read_from_snapshot(|snapshot| {
+            let roster = roster_from_document(&snapshot.session_document, false, false)?;
+            resolve_driver_from_roster(&roster, query, limit)
+        })
     }
 }
 
@@ -2076,7 +2160,6 @@ fn build_snapshot(
         captured_at_unix_ms,
         session_key: current_key,
         session_revision,
-        session_info_update: header.session_info_update,
         session_document: Arc::clone(document),
         replay_state,
         session_num,

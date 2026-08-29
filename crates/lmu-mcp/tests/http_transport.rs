@@ -46,7 +46,38 @@ async fn mcp_call(name: &str, arguments: Value) -> Value {
         Value::String("text".into())
     );
     assert!(json["result"]["content"][0]["text"].is_string());
+    let text: Value =
+        serde_json::from_str(json["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, json["result"]["structuredContent"]);
     json["result"]["structuredContent"].clone()
+}
+
+fn assert_full_unavailable_meta(meta: &Value) {
+    let object = meta.as_object().expect("metadata object");
+    for key in [
+        "sessionTick",
+        "sessionTime",
+        "capturedAtUnixMs",
+        "ageMs",
+        "stale",
+        "sessionKey",
+        "sessionRevision",
+        "serverElapsedMs",
+    ] {
+        assert!(object.contains_key(key), "missing metadata key {key}");
+    }
+    for key in [
+        "sessionTick",
+        "sessionTime",
+        "capturedAtUnixMs",
+        "ageMs",
+        "stale",
+        "sessionKey",
+        "sessionRevision",
+    ] {
+        assert!(meta[key].is_null(), "expected {key} to be null");
+    }
+    assert!(meta["serverElapsedMs"].is_u64());
 }
 
 #[tokio::test]
@@ -133,9 +164,23 @@ async fn http_mcp_initialize_and_tools_list_work() {
 
 #[tokio::test]
 async fn http_mcp_get_session_overview_reports_connected() {
-    let data = mcp_call("get_session_overview", json!({})).await;
-    assert_eq!(data["ok"], Value::Bool(true));
-    assert_eq!(data["data"]["connected"], Value::Bool(true));
+    let result = mcp_call("get_session_overview", json!({})).await;
+    assert_eq!(result["ok"], Value::Bool(true));
+    assert_eq!(result["data"]["connected"], Value::Bool(true));
+    assert_full_unavailable_meta(&result["meta"]);
+}
+
+#[tokio::test]
+async fn http_mcp_meta_is_present_on_read_command_and_error() {
+    let read = mcp_call("get_standings", json!({})).await;
+    assert_full_unavailable_meta(&read["meta"]);
+
+    let command = mcp_call("set_weather", json!({ "raining": 0.3 })).await;
+    assert_full_unavailable_meta(&command["meta"]);
+
+    let error = mcp_call("not_a_tool", json!({})).await;
+    assert_eq!(error["ok"], Value::Bool(false));
+    assert_full_unavailable_meta(&error["meta"]);
 }
 
 #[tokio::test]

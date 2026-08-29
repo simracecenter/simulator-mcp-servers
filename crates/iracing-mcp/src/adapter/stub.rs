@@ -6,9 +6,13 @@
 //! and `tests/http_transport.rs`), never constructed by
 //! `crates/launcher/src/runner.rs`.
 
-use std::sync::Mutex;
+use std::{
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
+use mcp_core::{Read, SnapshotMeta};
 
 use super::{
     AdapterError, CameraEntry, CameraGroup, CameraGroupList, DriverMatch, IracingAdapter,
@@ -20,6 +24,27 @@ use super::{
 #[derive(Debug)]
 pub struct StubAdapter {
     replay_state: Mutex<ReplayState>,
+}
+
+fn read_with_meta<T>(data: T, state: &ReplayState) -> Read<T> {
+    Read {
+        data,
+        meta: SnapshotMeta {
+            session_tick: Some(state.replay_frame_num),
+            session_time: Some(state.replay_session_time),
+            captured_at_unix_ms: Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            ),
+            age_ms: Some(0),
+            stale: Some(false),
+            session_key: Some("stub:300:0".to_string()),
+            session_revision: Some(0),
+            server_elapsed_ms: 0,
+        },
+    }
 }
 
 impl Default for StubAdapter {
@@ -47,28 +72,36 @@ impl Default for StubAdapter {
 
 #[async_trait]
 impl IracingAdapter for StubAdapter {
-    async fn get_session_overview(&self) -> SessionOverview {
+    async fn get_session_overview(&self) -> Read<SessionOverview> {
         let rs = self.replay_state.lock().expect("not poisoned").clone();
-        SessionOverview {
-            connected: rs.connected,
-            is_replay: rs.is_replay(),
-            is_in_car: rs.is_on_track || rs.is_in_garage,
-            session_name: "Practice".to_string(),
-            track_name: "Stub Track".to_string(),
-        }
+        read_with_meta(
+            SessionOverview {
+                connected: rs.connected,
+                is_replay: rs.is_replay(),
+                is_in_car: rs.is_on_track || rs.is_in_garage,
+                session_name: "Practice".to_string(),
+                track_name: "Stub Track".to_string(),
+            },
+            &rs,
+        )
     }
 
-    async fn get_session_data(&self) -> Result<SessionData, AdapterError> {
-        Ok(SessionData {
-            track_display_name: "Stub Track".to_string(),
-            current_session_type: "Practice".to_string(),
-            driver_count: 2,
-            session_count: 1,
-        })
+    async fn get_session_data(&self) -> Result<Read<SessionData>, AdapterError> {
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(
+            SessionData {
+                track_display_name: "Stub Track".to_string(),
+                current_session_type: "Practice".to_string(),
+                driver_count: 2,
+                session_count: 1,
+            },
+            &rs,
+        ))
     }
 
-    async fn get_replay_state(&self) -> Result<ReplayState, AdapterError> {
-        Ok(self.replay_state.lock().expect("not poisoned").clone())
+    async fn get_replay_state(&self) -> Result<Read<ReplayState>, AdapterError> {
+        let state = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(state.clone(), &state))
     }
 
     async fn set_replay_playback(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError> {
@@ -168,40 +201,44 @@ impl IracingAdapter for StubAdapter {
         Ok(())
     }
 
-    async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError> {
-        Ok(WeekendInfo {
-            track_name: "stub_track".to_string(),
-            track_id: 1,
-            track_display_name: "Stub Track".to_string(),
-            track_config_name: "Full".to_string(),
-            track_length_km: 5.0,
-            track_city: "Stubville".to_string(),
-            track_country: "Stubland".to_string(),
-            track_num_turns: 12,
-            track_pit_speed_limit_kph: 60.0,
-            track_type: "Road Course".to_string(),
-            series_id: 100,
-            season_id: 200,
-            session_id: 300,
-            sub_session_id: 400,
-            official: false,
-            event_type: "Practice".to_string(),
-            category: "Road".to_string(),
-            sim_mode: "Full".to_string(),
-            team_racing: false,
-            weather_type: "Constant".to_string(),
-            skies: "Clear".to_string(),
-            surface_temp_c: 35.0,
-            air_temp_c: 25.0,
-            wind_vel_ms: 2.0,
-        })
+    async fn get_weekend_info(&self) -> Result<Read<WeekendInfo>, AdapterError> {
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(
+            WeekendInfo {
+                track_name: "stub_track".to_string(),
+                track_id: 1,
+                track_display_name: "Stub Track".to_string(),
+                track_config_name: "Full".to_string(),
+                track_length_km: 5.0,
+                track_city: "Stubville".to_string(),
+                track_country: "Stubland".to_string(),
+                track_num_turns: 12,
+                track_pit_speed_limit_kph: 60.0,
+                track_type: "Road Course".to_string(),
+                series_id: 100,
+                season_id: 200,
+                session_id: 300,
+                sub_session_id: 400,
+                official: false,
+                event_type: "Practice".to_string(),
+                category: "Road".to_string(),
+                sim_mode: "Full".to_string(),
+                team_racing: false,
+                weather_type: "Constant".to_string(),
+                skies: "Clear".to_string(),
+                surface_temp_c: 35.0,
+                air_temp_c: 25.0,
+                wind_vel_ms: 2.0,
+            },
+            &rs,
+        ))
     }
 
     async fn get_roster(
         &self,
         _include_spectators: bool,
         _include_pace_car: bool,
-    ) -> Result<Roster, AdapterError> {
+    ) -> Result<Read<Roster>, AdapterError> {
         let entries = vec![
             RosterEntry {
                 car_idx: 0,
@@ -239,10 +276,11 @@ impl IracingAdapter for StubAdapter {
             },
         ];
         let count = entries.len();
-        Ok(Roster { entries, count })
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(Roster { entries, count }, &rs))
     }
 
-    async fn get_camera_groups(&self) -> Result<CameraGroupList, AdapterError> {
+    async fn get_camera_groups(&self) -> Result<Read<CameraGroupList>, AdapterError> {
         let groups = vec![
             CameraGroup {
                 group_num: 1,
@@ -270,10 +308,14 @@ impl IracingAdapter for StubAdapter {
             },
         ];
         let count = groups.len();
-        Ok(CameraGroupList { groups, count })
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(CameraGroupList { groups, count }, &rs))
     }
 
-    async fn get_standings(&self, _session_num: Option<i32>) -> Result<Standings, AdapterError> {
+    async fn get_standings(
+        &self,
+        _session_num: Option<i32>,
+    ) -> Result<Read<Standings>, AdapterError> {
         let positions = vec![
             SessionPosition {
                 position: 1,
@@ -300,14 +342,18 @@ impl IracingAdapter for StubAdapter {
                 reason_out: "Running".to_string(),
             },
         ];
-        Ok(Standings {
-            session_num: 0,
-            session_type: "Practice".to_string(),
-            positions,
-        })
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(
+            Standings {
+                session_num: 0,
+                session_type: "Practice".to_string(),
+                positions,
+            },
+            &rs,
+        ))
     }
 
-    async fn get_relatives(&self) -> Result<Relatives, AdapterError> {
+    async fn get_relatives(&self) -> Result<Read<Relatives>, AdapterError> {
         let entries = vec![
             RelativeEntry {
                 position: 1,
@@ -345,20 +391,24 @@ impl IracingAdapter for StubAdapter {
             },
         ];
 
-        Ok(Relatives {
-            basis: "track".to_string(),
-            session_num: 0,
-            entries: entries.clone(),
-            count: entries.len(),
-        })
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(
+            Relatives {
+                basis: "track".to_string(),
+                session_num: 0,
+                entries: entries.clone(),
+                count: entries.len(),
+            },
+            &rs,
+        ))
     }
 
     async fn resolve_driver(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<ResolveDriverResult, AdapterError> {
-        let roster = self.get_roster(false, false).await?;
+    ) -> Result<Read<ResolveDriverResult>, AdapterError> {
+        let roster = self.get_roster(false, false).await?.data;
         let q = query.to_lowercase();
         let mut scored: Vec<DriverMatch> = roster
             .entries
@@ -388,9 +438,18 @@ impl IracingAdapter for StubAdapter {
         scored.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
         scored.truncate(limit);
         let best_match = scored.first().cloned();
-        Ok(ResolveDriverResult {
-            best_match,
-            candidates: scored,
-        })
+        let rs = self.replay_state.lock().expect("not poisoned").clone();
+        Ok(read_with_meta(
+            ResolveDriverResult {
+                best_match,
+                candidates: scored,
+            },
+            &rs,
+        ))
+    }
+
+    async fn snapshot_meta(&self) -> SnapshotMeta {
+        let state = self.replay_state.lock().expect("not poisoned").clone();
+        read_with_meta((), &state).meta
     }
 }

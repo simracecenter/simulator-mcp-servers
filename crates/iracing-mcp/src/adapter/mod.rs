@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use mcp_core::{Read, SnapshotMeta};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -285,9 +286,10 @@ pub enum AdapterError {
 
 #[async_trait]
 pub trait IracingAdapter: Send + Sync {
-    async fn get_session_overview(&self) -> SessionOverview;
-    async fn get_session_data(&self) -> Result<SessionData, AdapterError>;
-    async fn get_replay_state(&self) -> Result<ReplayState, AdapterError>;
+    async fn get_session_overview(&self) -> Read<SessionOverview>;
+    async fn get_session_data(&self) -> Result<Read<SessionData>, AdapterError>;
+    async fn get_replay_state(&self) -> Result<Read<ReplayState>, AdapterError>;
+    async fn snapshot_meta(&self) -> SnapshotMeta;
     async fn set_replay_playback(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError>;
     async fn replay_seek_session_time(
         &self,
@@ -307,20 +309,23 @@ pub trait IracingAdapter: Send + Sync {
         group_number: Option<i32>,
         camera_number: Option<i32>,
     ) -> Result<(), AdapterError>;
-    async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError>;
+    async fn get_weekend_info(&self) -> Result<Read<WeekendInfo>, AdapterError>;
     async fn get_roster(
         &self,
         include_spectators: bool,
         include_pace_car: bool,
-    ) -> Result<Roster, AdapterError>;
-    async fn get_camera_groups(&self) -> Result<CameraGroupList, AdapterError>;
-    async fn get_standings(&self, session_num: Option<i32>) -> Result<Standings, AdapterError>;
-    async fn get_relatives(&self) -> Result<Relatives, AdapterError>;
+    ) -> Result<Read<Roster>, AdapterError>;
+    async fn get_camera_groups(&self) -> Result<Read<CameraGroupList>, AdapterError>;
+    async fn get_standings(
+        &self,
+        session_num: Option<i32>,
+    ) -> Result<Read<Standings>, AdapterError>;
+    async fn get_relatives(&self) -> Result<Read<Relatives>, AdapterError>;
     async fn resolve_driver(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<ResolveDriverResult, AdapterError>;
+    ) -> Result<Read<ResolveDriverResult>, AdapterError>;
 }
 
 #[cfg(test)]

@@ -7,9 +7,10 @@
 
 use async_trait::async_trait;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
-use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, ToolCapability};
+use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, SnapshotMeta, ToolCapability};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Instant;
 use tokio::time::Duration;
 use tracing::warn;
 
@@ -279,12 +280,13 @@ fn capabilities() -> Vec<ToolCapability> {
 
 impl LmuMcpHandler {
     async fn tools_call(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
+        let started = Instant::now();
         let name = params
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        match name {
+        let response = match name {
             "get_session_overview" => {
                 let overview = self.adapter.get_session_overview().await;
                 tool_ok(id, overview)
@@ -334,7 +336,7 @@ impl LmuMcpHandler {
                 let args: ReplaySeekSessionTimeArgs =
                     match parse_tool_args(&id, &params, "replay_seek_session_time") {
                         Ok(args) => args,
-                        Err(response) => return response,
+                        Err(response) => return self.finalize_tool_result(response, started).await,
                     };
                 match self
                     .adapter
@@ -346,8 +348,42 @@ impl LmuMcpHandler {
                 }
             }
             "get_capabilities" => tool_ok(id, capabilities()),
-            _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
+            _ => tool_err(id, "invalid_arguments", "unknown tool name"),
+        };
+        self.finalize_tool_result(response, started).await
+    }
+
+    async fn finalize_tool_result(
+        &self,
+        mut response: JsonRpcResponse,
+        started: Instant,
+    ) -> JsonRpcResponse {
+        let Some(result) = response.result.as_mut() else {
+            return response;
+        };
+        let Some(payload) = result
+            .get_mut("structuredContent")
+            .and_then(Value::as_object_mut)
+        else {
+            return response;
+        };
+        let mut meta = payload
+            .get("meta")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<SnapshotMeta>(value).ok())
+            .unwrap_or_else(SnapshotMeta::unavailable);
+        if payload.get("meta").is_none() {
+            meta = self.adapter.snapshot_meta().await;
         }
+        meta.server_elapsed_ms = started.elapsed().as_millis() as u64;
+        payload.insert("meta".to_string(), json!(meta));
+        let payload_text = serde_json::to_string(payload).unwrap_or_default();
+        if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+            if let Some(item) = content.iter_mut().find(|item| item.get("text").is_some()) {
+                item["text"] = Value::String(payload_text);
+            }
+        }
+        response
     }
 
     /// Sends an `rF2HWControl` command and verifies it via `get_pit_info`.

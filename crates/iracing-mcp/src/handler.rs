@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
-use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, ToolCapability};
+use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, SnapshotMeta, ToolCapability};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration, Instant};
@@ -412,18 +412,21 @@ fn capabilities() -> Vec<ToolCapability> {
 
 impl IracingMcpHandler {
     async fn tools_call(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
+        let started = Instant::now();
         let name = params
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        match name {
+        let response = match name {
             "get_session_overview" => {
-                let overview = self.adapter.get_session_overview().await;
-                tool_ok(id, overview)
+                let read = self.adapter.get_session_overview().await;
+                tool_ok_with_meta(id, read.data, read.meta)
             }
             "replay_get_state" => match self.adapter.get_replay_state().await {
-                Ok(replay_state) => tool_ok(id, replay_state.tool_data()),
+                Ok(replay_state) => {
+                    tool_ok_with_meta(id, replay_state.data.tool_data(), replay_state.meta)
+                }
                 Err(error) => tool_err(id, error_code(&error), &error.to_string()),
             },
             "replay_set_playback" => self.replay_set_playback(id, params).await,
@@ -434,7 +437,7 @@ impl IracingMcpHandler {
             "camera_focus" => self.camera_focus(id, params).await,
             "camera_set_state" => self.camera_set_state(id, params).await,
             "get_weekend_info" => match self.adapter.get_weekend_info().await {
-                Ok(info) => tool_ok(id, info),
+                Ok(info) => tool_ok_with_meta(id, info.data, info.meta),
                 Err(e) => tool_err(id, error_code(&e), &e.to_string()),
             },
             "get_roster" => {
@@ -448,29 +451,29 @@ impl IracingMcpHandler {
                     .get_roster(args.include_spectators, args.include_pace_car)
                     .await
                 {
-                    Ok(roster) => tool_ok(id, roster),
+                    Ok(roster) => tool_ok_with_meta(id, roster.data, roster.meta),
                     Err(e) => tool_err(id, error_code(&e), &e.to_string()),
                 }
             }
             "get_camera_groups" => match self.adapter.get_camera_groups().await {
-                Ok(groups) => tool_ok(id, groups),
+                Ok(groups) => tool_ok_with_meta(id, groups.data, groups.meta),
                 Err(e) => tool_err(id, error_code(&e), &e.to_string()),
             },
             "get_standings" => {
                 let args: GetStandingsArgs = parse_tool_args(&id, &params, "get_standings")
                     .unwrap_or(GetStandingsArgs { session_num: None });
                 match self.adapter.get_standings(args.session_num).await {
-                    Ok(standings) => tool_ok(id, standings),
+                    Ok(standings) => tool_ok_with_meta(id, standings.data, standings.meta),
                     Err(e) => tool_err(id, error_code(&e), &e.to_string()),
                 }
             }
             "get_relatives" => {
                 let _: GetRelativesArgs = match parse_tool_args(&id, &params, "get_relatives") {
                     Ok(args) => args,
-                    Err(response) => return response,
+                    Err(response) => return self.finalize_tool_result(response, started).await,
                 };
                 match self.adapter.get_relatives().await {
-                    Ok(relatives) => tool_ok(id, relatives),
+                    Ok(relatives) => tool_ok_with_meta(id, relatives.data, relatives.meta),
                     Err(e) => tool_err(id, error_code(&e), &e.to_string()),
                 }
             }
@@ -478,16 +481,54 @@ impl IracingMcpHandler {
                 let args: ResolveDriverArgs = match parse_tool_args(&id, &params, "resolve_driver")
                 {
                     Ok(a) => a,
-                    Err(r) => return r,
+                    Err(r) => return self.finalize_tool_result(r, started).await,
                 };
                 match self.adapter.resolve_driver(&args.query, args.limit).await {
-                    Ok(result) => tool_ok(id, result),
+                    Ok(result) => tool_ok_with_meta(id, result.data, result.meta),
                     Err(e) => tool_err(id, error_code(&e), &e.to_string()),
                 }
             }
             "get_capabilities" => tool_ok(id, capabilities()),
-            _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
+            _ => tool_err(id, "invalid_arguments", "unknown tool name"),
+        };
+        self.finalize_tool_result(response, started).await
+    }
+
+    async fn finalize_tool_result(
+        &self,
+        mut response: JsonRpcResponse,
+        started: Instant,
+    ) -> JsonRpcResponse {
+        let Some(result) = response.result.as_mut() else {
+            return response;
+        };
+        let Some(payload) = result
+            .get_mut("structuredContent")
+            .and_then(Value::as_object_mut)
+        else {
+            return response;
+        };
+        let mut meta = payload
+            .get("meta")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<SnapshotMeta>(value).ok())
+            .unwrap_or(SnapshotMeta::unavailable());
+        if payload.get("meta").is_none() {
+            meta = self.adapter.snapshot_meta().await;
         }
+        meta.server_elapsed_ms = started.elapsed().as_millis() as u64;
+        payload.insert("meta".to_string(), json!(meta));
+        let payload_text = serde_json::to_string(payload).unwrap_or_default();
+        if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+            if let Some(item) = content.iter_mut().find(|item| item.get("text").is_some()) {
+                item["text"] = Value::String(payload_text);
+            }
+        }
+        response
+    }
+
+    async fn replay_state_data(&self) -> Result<ReplayState, AdapterError> {
+        self.adapter.get_replay_state().await.map(|read| read.data)
     }
 
     async fn replay_set_playback(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -497,7 +538,7 @@ impl IracingMcpHandler {
             Err(response) => return response,
         };
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -517,7 +558,7 @@ impl IracingMcpHandler {
             before,
             self.adapter
                 .set_replay_playback(args.speed, args.slow_motion),
-            || self.adapter.get_replay_state(),
+            || self.replay_state_data(),
             |current| verify_playback_state(current, &args, &mut pause_candidate_frame),
             timeout,
             Duration::from_millis(50),
@@ -548,7 +589,7 @@ impl IracingMcpHandler {
                 Err(response) => return response,
             };
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -563,7 +604,7 @@ impl IracingMcpHandler {
             before,
             self.adapter
                 .replay_seek_session_time(args.session_num, args.session_time_ms),
-            || self.adapter.get_replay_state(),
+            || self.replay_state_data(),
             |current: &ReplayState| {
                 let observed_time_ms = (current.replay_session_time * 1000.0).round() as i32;
                 current.replay_session_num == args.session_num
@@ -597,7 +638,7 @@ impl IracingMcpHandler {
             Err(response) => return response,
         };
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -616,7 +657,7 @@ impl IracingMcpHandler {
             before,
             self.adapter
                 .camera_focus(args.car_idx, args.group_number, args.camera_number),
-            || self.adapter.get_replay_state(),
+            || self.replay_state_data(),
             |current: &ReplayState| {
                 current.cam_car_idx == args.car_idx
                     && (!verify_group || current.cam_group_number == expected_group)
@@ -667,7 +708,7 @@ impl IracingMcpHandler {
             Err(response) => return response,
         };
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -688,7 +729,7 @@ impl IracingMcpHandler {
         let outcome = verify_loop(
             before,
             self.adapter.replay_seek_frame(args.mode, args.frame),
-            || self.adapter.get_replay_state(),
+            || self.replay_state_data(),
             |current: &ReplayState| {
                 let delta = (current.replay_frame_num - target_frame).abs();
                 delta <= args.tolerance_frames
@@ -723,7 +764,7 @@ impl IracingMcpHandler {
             Err(response) => return response,
         };
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -739,7 +780,7 @@ impl IracingMcpHandler {
         let outcome = verify_loop(
             before,
             self.adapter.replay_search_event(mode),
-            || self.adapter.get_replay_state(),
+            || self.replay_state_data(),
             |current: &ReplayState| verify_search_event_state(mode, &before_for_verify, current),
             timeout,
             Duration::from_millis(50),
@@ -795,7 +836,7 @@ impl IracingMcpHandler {
             }
         }
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -816,7 +857,7 @@ impl IracingMcpHandler {
             let mut paused = false;
             let deadline = Instant::now() + step_timeout;
             while Instant::now() < deadline {
-                match self.adapter.get_replay_state().await {
+                match self.replay_state_data().await {
                     Ok(current) => {
                         if current.replay_play_speed == 0 {
                             paused = true;
@@ -840,7 +881,7 @@ impl IracingMcpHandler {
                         "reason": "Replay did not pause before show_window seek verification could start.",
                         "before": before,
                         "steps": steps,
-                        "finalState": self.adapter.get_replay_state().await.unwrap_or(before.clone()),
+                        "finalState": self.replay_state_data().await.unwrap_or(before.clone()),
                         "elapsedMs": started_at.elapsed().as_millis()
                     }),
                 );
@@ -860,7 +901,7 @@ impl IracingMcpHandler {
         let mut seek_observed = before.clone();
         let deadline = Instant::now() + step_timeout;
         while Instant::now() < deadline {
-            match self.adapter.get_replay_state().await {
+            match self.replay_state_data().await {
                 Ok(current) => {
                     let observed_time_ms = (current.replay_session_time * 1000.0).round() as i32;
                     if current.replay_session_num == args.session_num
@@ -895,7 +936,7 @@ impl IracingMcpHandler {
         let mut focus_observed = seek_observed.clone();
         let deadline = Instant::now() + step_timeout;
         while Instant::now() < deadline {
-            match self.adapter.get_replay_state().await {
+            match self.replay_state_data().await {
                 Ok(current) => {
                     if current.cam_car_idx == args.focus_car_idx {
                         focus_verified = true;
@@ -923,7 +964,7 @@ impl IracingMcpHandler {
         let mut playback_observed = focus_observed.clone();
         let deadline = Instant::now() + step_timeout;
         while Instant::now() < deadline {
-            match self.adapter.get_replay_state().await {
+            match self.replay_state_data().await {
                 Ok(current) => {
                     let speed_ok = current.replay_play_speed == args.speed;
                     let play_ok = if args.speed == 0 {
@@ -954,7 +995,7 @@ impl IracingMcpHandler {
             let mut end_observed = playback_observed.clone();
             let deadline = Instant::now() + step_timeout;
             while Instant::now() < deadline {
-                match self.adapter.get_replay_state().await {
+                match self.replay_state_data().await {
                     Ok(current) => {
                         end_observed = current.clone();
                         let observed_time_ms =
@@ -979,7 +1020,7 @@ impl IracingMcpHandler {
             let mut pause_observed = end_observed;
             let deadline = Instant::now() + step_timeout;
             while Instant::now() < deadline {
-                match self.adapter.get_replay_state().await {
+                match self.replay_state_data().await {
                     Ok(current) => {
                         pause_observed = current.clone();
                         if reached_end && current.replay_play_speed == 0 {
@@ -1005,7 +1046,7 @@ impl IracingMcpHandler {
             }));
         }
 
-        let final_state = match self.adapter.get_replay_state().await {
+        let final_state = match self.replay_state_data().await {
             Ok(current) => current,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -1053,7 +1094,7 @@ impl IracingMcpHandler {
             Err(response) => return response,
         };
 
-        let before = match self.adapter.get_replay_state().await {
+        let before = match self.replay_state_data().await {
             Ok(before) => before,
             Err(error) => return tool_err(id, error_code(&error), &error.to_string()),
         };
@@ -1071,7 +1112,7 @@ impl IracingMcpHandler {
         let outcome = verify_loop(
             before,
             self.adapter.camera_set_state(expected_state),
-            || self.adapter.get_replay_state(),
+            || self.replay_state_data(),
             |current: &ReplayState| {
                 (current.cam_camera_state & requested_mask) == expected_masked_state
             },
@@ -1325,6 +1366,24 @@ fn tool_ok(id: Option<Value>, data: impl Serialize) -> JsonRpcResponse {
         json!({
             "ok": true,
             "data": data,
+            "warnings": [],
+            "error": null
+        }),
+        false,
+    )
+}
+
+fn tool_ok_with_meta(
+    id: Option<Value>,
+    data: impl Serialize,
+    meta: SnapshotMeta,
+) -> JsonRpcResponse {
+    build_tool_result(
+        id,
+        json!({
+            "ok": true,
+            "data": data,
+            "meta": meta,
             "warnings": [],
             "error": null
         }),
