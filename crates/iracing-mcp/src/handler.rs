@@ -1402,6 +1402,7 @@ fn error_code(error: &AdapterError) -> &'static str {
         AdapterError::Broadcast(_) => "broadcast_error",
         AdapterError::UnsupportedReplaySpeed(_) => "invalid_arguments",
         AdapterError::InvalidArgument(_) => "invalid_arguments",
+        AdapterError::Internal(_) => "internal_error",
     }
 }
 

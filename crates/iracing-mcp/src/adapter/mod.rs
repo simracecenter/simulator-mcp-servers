@@ -245,6 +245,8 @@ pub enum AdapterError {
     UnsupportedReplaySpeed(i32),
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 #[async_trait]
