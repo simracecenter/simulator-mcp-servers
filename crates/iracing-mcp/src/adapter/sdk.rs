@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 #[cfg(windows)]
 use std::sync::OnceLock;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use std::thread;
 #[cfg(any(windows, test))]
 use std::time::{Duration, Instant};
@@ -166,6 +166,7 @@ impl SessionRevisionTracker {
 
 #[cfg(any(windows, test))]
 #[derive(Clone)]
+// These fields and helpers are consumed by the forthcoming `meta` envelope work.
 #[allow(dead_code)]
 pub(crate) struct TelemetrySnapshot {
     pub(crate) connected: bool,
@@ -189,6 +190,7 @@ pub(crate) struct TelemetrySnapshot {
 }
 
 #[cfg(any(windows, test))]
+// These helpers are consumed by the forthcoming `meta` envelope work.
 #[allow(dead_code)]
 impl TelemetrySnapshot {
     pub(crate) fn age(&self, now: Instant) -> Duration {
@@ -201,11 +203,20 @@ impl TelemetrySnapshot {
 }
 
 #[cfg(any(windows, test))]
+// This threshold is consumed by the forthcoming `meta` envelope work.
 #[allow(dead_code)]
 const SNAPSHOT_STALE_AFTER: Duration = Duration::from_millis(250);
 
 #[cfg(windows)]
-const SAMPLER_SAMPLE_TIMEOUT: Duration = Duration::from_millis(250);
+// Keep the data-ready wait well below the stale threshold so one missed event
+// does not make staleness flap at the sampler's own polling granularity.
+const SAMPLER_SAMPLE_TIMEOUT: Duration = Duration::from_millis(100);
+#[cfg(windows)]
+const FIRST_SNAPSHOT_WAIT: Duration = Duration::from_secs(1);
+#[cfg(windows)]
+const FIRST_SNAPSHOT_POLL: Duration = Duration::from_millis(10);
+#[cfg(windows)]
+const SAMPLER_RESTART_DELAY: Duration = Duration::from_millis(250);
 
 #[cfg(windows)]
 static SNAPSHOT_SLOT: OnceLock<Mutex<Option<Arc<TelemetrySnapshot>>>> = OnceLock::new();
@@ -231,10 +242,35 @@ fn replay_state_from_snapshot(snapshot: &TelemetrySnapshot) -> Result<ReplayStat
 fn snapshot_for_read() -> Result<Arc<TelemetrySnapshot>, AdapterError> {
     start_sampler();
     let slot = SNAPSHOT_SLOT.get_or_init(|| Mutex::new(None));
-    slot.lock()
-        .map_err(|_| AdapterError::NotConnected("snapshot lock poisoned".to_string()))?
-        .clone()
-        .ok_or_else(|| AdapterError::NotConnected("iRacing SDK is not connected".to_string()))
+    wait_for_initial_snapshot(FIRST_SNAPSHOT_WAIT, FIRST_SNAPSHOT_POLL, || {
+        Ok(slot
+            .lock()
+            .map_err(|_| AdapterError::NotConnected("snapshot lock poisoned".to_string()))?
+            .clone())
+    })
+}
+
+#[cfg(any(windows, test))]
+fn wait_for_initial_snapshot<T, F>(
+    timeout: Duration,
+    poll: Duration,
+    mut load: F,
+) -> Result<T, AdapterError>
+where
+    F: FnMut() -> Result<Option<T>, AdapterError>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = load()? {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            return Err(AdapterError::NotConnected(
+                "iRacing SDK is not connected".to_string(),
+            ));
+        }
+        thread::sleep(poll);
+    }
 }
 
 /// The iRacing SDK's shared-memory telemetry map and broadcast-message API
@@ -553,6 +589,29 @@ DriverInfo:
             2
         );
     }
+
+    #[test]
+    fn first_publication_wait_returns_after_snapshot_is_available() {
+        let mut attempts = 0;
+        let value =
+            wait_for_initial_snapshot(Duration::from_millis(100), Duration::from_millis(1), || {
+                attempts += 1;
+                Ok((attempts >= 3).then_some("published"))
+            })
+            .expect("a first publication should become available");
+        assert_eq!(value, "published");
+        assert!(attempts >= 3);
+    }
+
+    #[test]
+    fn first_publication_wait_times_out_without_a_snapshot() {
+        let error =
+            wait_for_initial_snapshot(Duration::from_millis(1), Duration::from_millis(1), || {
+                Ok::<Option<()>, AdapterError>(None)
+            })
+            .expect_err("missing first publication should time out");
+        assert!(matches!(error, AdapterError::NotConnected(_)));
+    }
 }
 
 #[cfg(windows)]
@@ -844,8 +903,12 @@ impl SdkAdapter {
             ));
         }
 
-        ensure_sdk_connection()?;
         let snapshot = snapshot_for_read()?;
+        if !snapshot.connected {
+            return Err(AdapterError::NotConnected(
+                "iRacing SDK reports the simulator is not connected".to_string(),
+            ));
+        }
         let replay_state = replay_state_from_snapshot(&snapshot)?;
         let group_number = group_number.unwrap_or(replay_state.cam_group_number);
         let camera_number = camera_number.unwrap_or(replay_state.cam_camera_number);
@@ -1779,19 +1842,42 @@ impl SdkConnection {
 fn start_sampler() {
     SAMPLER_STARTED.get_or_init(|| {
         if let Err(error) = thread::Builder::new()
-            .name("iracing-telemetry-sampler".to_string())
-            .spawn(|| {
-                let result = std::panic::catch_unwind(sampler_loop);
-                if result.is_err() {
-                    error!("iRacing telemetry sampler panicked");
-                    publish_disconnected_snapshot(None);
-                }
-            })
+            .name("iracing-telemetry-sampler-supervisor".to_string())
+            .spawn(sampler_supervisor_loop)
         {
             error!(%error, "failed to start iRacing telemetry sampler");
             publish_disconnected_snapshot(None);
         }
     });
+}
+
+#[cfg(windows)]
+fn sampler_supervisor_loop() {
+    loop {
+        let worker = thread::Builder::new()
+            .name("iracing-telemetry-sampler".to_string())
+            .spawn(sampler_loop);
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                error!(%error, "failed to respawn iRacing telemetry sampler");
+                publish_disconnected_snapshot(None);
+                thread::sleep(SAMPLER_RESTART_DELAY);
+                continue;
+            }
+        };
+        if worker.join().is_err() {
+            error!("iRacing telemetry sampler panicked; scheduling respawn");
+            publish_disconnected_snapshot(None);
+            thread::sleep(SAMPLER_RESTART_DELAY);
+            error!("respawning iRacing telemetry sampler after panic");
+        } else {
+            error!("iRacing telemetry sampler exited; scheduling respawn");
+            publish_disconnected_snapshot(None);
+            thread::sleep(SAMPLER_RESTART_DELAY);
+            error!("respawning iRacing telemetry sampler after exit");
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1920,11 +2006,12 @@ fn build_snapshot(
         .as_ref()
         .map(|(_, document)| document)
         .ok_or_else(|| AdapterError::SessionInfo("session document unavailable".to_string()))?;
+    let session_tick = read_i32(sample, "SessionTick")?;
+    let session_time = read_f64(sample, "SessionTime")?;
     let session_num = read_i32(sample, "SessionNum")?;
     let replay_state = replay_state_from_sample(sample)?;
     let current_key = derive_session_key(document, session_num);
     let session_revision = revision.mark_connected(&current_key);
-    let session_time = replay_state.replay_session_time;
     let now = Instant::now();
     let captured_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1932,7 +2019,7 @@ fn build_snapshot(
         .as_millis() as u64;
     Ok(TelemetrySnapshot {
         connected: true,
-        session_tick: header.first_buffer_tick,
+        session_tick,
         session_time,
         captured_at: now,
         captured_at_unix_ms,
