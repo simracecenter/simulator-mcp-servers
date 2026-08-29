@@ -534,11 +534,7 @@ impl SdkAdapter {
             connected: replay_state.is_some(),
             is_replay: replay_state
                 .as_ref()
-                .map(|state| {
-                    state.is_replay_playing
-                        || state.replay_frame_num > 0
-                        || state.replay_session_time > 0.0
-                })
+                .map(ReplayState::is_replay)
                 .unwrap_or(false),
             is_in_car: replay_state
                 .as_ref()

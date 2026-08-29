@@ -51,7 +51,7 @@ impl IracingAdapter for StubAdapter {
         let rs = self.replay_state.lock().expect("not poisoned").clone();
         SessionOverview {
             connected: rs.connected,
-            is_replay: rs.is_replay_playing || rs.replay_frame_num > 0,
+            is_replay: rs.is_replay(),
             is_in_car: rs.is_on_track || rs.is_in_garage,
             session_name: "Practice".to_string(),
             track_name: "Stub Track".to_string(),
