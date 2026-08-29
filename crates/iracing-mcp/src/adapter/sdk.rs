@@ -12,7 +12,9 @@ use iracing::telemetry::Value;
 #[cfg(windows)]
 use serde_yaml::Value as YamlValue;
 #[cfg(windows)]
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+#[cfg(any(windows, test))]
+use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use tracing::{debug, warn};
 
@@ -75,18 +77,88 @@ struct IrsdkHeaderPrefix {
     session_info_offset: i32,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 #[derive(Clone)]
-struct SessionYamlCache {
+struct ParsedSessionCache<T> {
     session_info_update: i32,
-    yaml: String,
+    document: Arc<T>,
 }
 
 #[cfg(windows)]
-static SESSION_YAML_CACHE: OnceLock<Mutex<Option<SessionYamlCache>>> = OnceLock::new();
+static SESSION_YAML_CACHE: OnceLock<Mutex<Option<ParsedSessionCache<YamlValue>>>> = OnceLock::new();
+
+#[cfg(windows)]
+struct SdkConnection {
+    connection: iracing::Connection,
+    mapping: winapi::um::winnt::HANDLE,
+    view: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+// `iracing::Connection` stores a raw pointer to its mapped view, so it does
+// not provide the auto Send/Sync guarantees needed here. SdkConnection is
+// accessed only while SDK_CONNECTION's Mutex is held; its mapping handle and
+// view remain owned for its lifetime and are released in Drop.
+unsafe impl Send for SdkConnection {}
+
+#[cfg(windows)]
+unsafe impl Sync for SdkConnection {}
+
+#[cfg(windows)]
+impl Drop for SdkConnection {
+    fn drop(&mut self) {
+        unsafe {
+            UnmapViewOfFile(self.view);
+            CloseHandle(self.mapping);
+        }
+    }
+}
+
+#[cfg(windows)]
+static SDK_CONNECTION: OnceLock<Mutex<Option<SdkConnection>>> = OnceLock::new();
 
 #[derive(Debug, Default)]
 pub struct SdkAdapter;
+
+#[cfg(any(windows, test))]
+fn cache_parsed_document<T, F>(
+    cache: &Mutex<Option<ParsedSessionCache<T>>>,
+    session_info_update: i32,
+    session_yaml: &str,
+    parse: F,
+) -> Result<Arc<T>, AdapterError>
+where
+    T: Send + Sync + 'static,
+    F: FnOnce(&str) -> Result<T, AdapterError>,
+{
+    {
+        let guard = cache.lock().map_err(|_| {
+            AdapterError::SessionInfo("session YAML cache lock poisoned".to_string())
+        })?;
+        if let Some(cached) = guard.as_ref() {
+            if cached.session_info_update == session_info_update {
+                return Ok(Arc::clone(&cached.document));
+            }
+        }
+    }
+
+    let document = Arc::new(parse(session_yaml)?);
+    let mut guard = cache
+        .lock()
+        .map_err(|_| AdapterError::SessionInfo("session YAML cache lock poisoned".to_string()))?;
+
+    if let Some(cached) = guard.as_ref() {
+        if cached.session_info_update == session_info_update {
+            return Ok(Arc::clone(&cached.document));
+        }
+    }
+
+    *guard = Some(ParsedSessionCache {
+        session_info_update,
+        document: Arc::clone(&document),
+    });
+    Ok(document)
+}
 
 /// The iRacing SDK's shared-memory telemetry map and broadcast-message API
 /// are only available on Windows (the `iracing`/`iracing-broadcast` crates
@@ -241,201 +313,57 @@ mod tests {
     }
 }
 
-#[cfg(windows)]
-impl SdkAdapter {
-    fn session_data_sync(&self) -> Result<SessionData, AdapterError> {
-        ensure_sim_connected()?;
-        let connection = iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
-        let telemetry = connection
-            .telemetry()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
-        let current_session_num = read_i32(&telemetry, "SessionNum")?;
-        let session_yaml = read_session_yaml()?;
+#[cfg(test)]
+mod parsed_cache_tests {
+    use super::{cache_parsed_document, ParsedSessionCache};
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
-        parse_session_data(&session_yaml, current_session_num)
+    #[test]
+    fn unchanged_session_info_update_reuses_parsed_document() {
+        let cache = Mutex::new(None::<ParsedSessionCache<Value>>);
+        let parse_count = AtomicUsize::new(0);
+
+        let first = cache_parsed_document(&cache, 7, r#"{"track":"first"}"#, |yaml| {
+            parse_count.fetch_add(1, Ordering::SeqCst);
+            serde_json::from_str(yaml)
+                .map_err(|error| super::AdapterError::SessionInfo(error.to_string()))
+        })
+        .expect("first document should parse");
+        let second = cache_parsed_document(&cache, 7, r#"{"track":"ignored"}"#, |yaml| {
+            parse_count.fetch_add(1, Ordering::SeqCst);
+            serde_json::from_str(yaml)
+                .map_err(|error| super::AdapterError::SessionInfo(error.to_string()))
+        })
+        .expect("cached document should be returned");
+
+        assert_eq!(parse_count.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first["track"], "first");
     }
 
-    fn replay_state_sync(&self) -> Result<ReplayState, AdapterError> {
-        ensure_sim_connected()?;
-        let connection = iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
-        let sample = connection
-            .telemetry()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+    #[test]
+    fn changed_session_info_update_reparses_document() {
+        let cache = Mutex::new(None::<ParsedSessionCache<Value>>);
+        let parse_count = AtomicUsize::new(0);
 
-        let state = ReplayState {
-            connected: true,
-            is_on_track: read_bool(&sample, "IsOnTrack")?,
-            is_in_garage: read_bool(&sample, "IsInGarage")?,
-            is_replay_playing: read_bool(&sample, "IsReplayPlaying")?,
-            replay_play_speed: read_i32(&sample, "ReplayPlaySpeed")?,
-            replay_play_slow_motion: read_bool(&sample, "ReplayPlaySlowMotion")?,
-            replay_frame_num: read_i32(&sample, "ReplayFrameNum")?,
-            replay_frame_num_end: read_i32(&sample, "ReplayFrameNumEnd")?,
-            replay_session_num: read_i32(&sample, "ReplaySessionNum")?,
-            replay_session_time: read_f64(&sample, "ReplaySessionTime")?,
-            cam_car_idx: read_i32(&sample, "CamCarIdx")?,
-            cam_group_number: read_i32(&sample, "CamGroupNumber")?,
-            cam_camera_number: read_i32(&sample, "CamCameraNumber")?,
-            cam_camera_state: read_i32(&sample, "CamCameraState")?,
-        };
-        debug!(
-            "replay_state_sync: speed={} playing={} slow={} frame={} session_num={} session_time={:.3} cam_car={} cam_group={} cam_camera={} on_track={} in_garage={}",
-            state.replay_play_speed, state.is_replay_playing, state.replay_play_slow_motion,
-            state.replay_frame_num, state.replay_session_num, state.replay_session_time,
-            state.cam_car_idx, state.cam_group_number, state.cam_camera_number,
-            state.is_on_track, state.is_in_garage
-        );
-        Ok(state)
-    }
+        let first = cache_parsed_document(&cache, 7, r#"{"track":"first"}"#, |yaml| {
+            parse_count.fetch_add(1, Ordering::SeqCst);
+            serde_json::from_str(yaml)
+                .map_err(|error| super::AdapterError::SessionInfo(error.to_string()))
+        })
+        .expect("first document should parse");
+        let second = cache_parsed_document(&cache, 8, r#"{"track":"second"}"#, |yaml| {
+            parse_count.fetch_add(1, Ordering::SeqCst);
+            serde_json::from_str(yaml)
+                .map_err(|error| super::AdapterError::SessionInfo(error.to_string()))
+        })
+        .expect("changed document should parse");
 
-    fn set_replay_playback_sync(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError> {
-        if !(0..=255).contains(&speed) {
-            return Err(AdapterError::UnsupportedReplaySpeed(speed));
-        }
-
-        ensure_sim_connected()?;
-
-        debug!(
-            "set_replay_playback: sending ReplaySetPlaySpeed speed={} slow_motion={}",
-            speed, slow_motion
-        );
-        let result = send_replay_set_play_speed(speed, slow_motion);
-        debug!("set_replay_playback: broadcast result={:?}", result);
-        result
-    }
-
-    fn replay_seek_session_time_sync(
-        &self,
-        session_num: i32,
-        session_time_ms: i32,
-    ) -> Result<(), AdapterError> {
-        if session_num < 0 {
-            return Err(AdapterError::InvalidArgument(
-                "session_num must be non-negative".to_string(),
-            ));
-        }
-
-        if session_time_ms < 0 {
-            return Err(AdapterError::InvalidArgument(
-                "session_time_ms must be non-negative".to_string(),
-            ));
-        }
-
-        ensure_sim_connected()?;
-
-        let session_time = session_time_ms as u32;
-        let time_lo = (session_time & 0xFFFF) as i32;
-        let time_hi = ((session_time >> 16) & 0xFFFF) as i32;
-        debug!(
-            "replay_seek_session_time: sending ReplaySearchSessionTime session_num={} session_time_ms={} time_lo=0x{:04X} time_hi=0x{:04X}",
-            session_num, session_time_ms, time_lo, time_hi
-        );
-        let result = send_broadcast_message_3(
-            BROADCAST_REPLAY_SEARCH_SESSION_TIME,
-            session_num,
-            time_lo,
-            time_hi,
-        );
-        debug!("replay_seek_session_time: broadcast result={:?}", result);
-        result
-    }
-
-    fn replay_seek_frame_sync(
-        &self,
-        mode: ReplaySeekFrameMode,
-        frame: i32,
-    ) -> Result<(), AdapterError> {
-        ensure_sim_connected()?;
-
-        let mode_code = match mode {
-            ReplaySeekFrameMode::Begin => 0,
-            ReplaySeekFrameMode::Current => 1,
-            ReplaySeekFrameMode::End => 2,
-        };
-        debug!(
-            "replay_seek_frame: sending ReplaySetPlayPosition mode={:?} frame={}",
-            mode, frame
-        );
-        let result = send_broadcast_message_2(BROADCAST_REPLAY_SET_PLAY_POSITION, mode_code, frame);
-        debug!("replay_seek_frame: broadcast result={:?}", result);
-        result
-    }
-
-    fn replay_search_event_sync(&self, mode: ReplaySearchMode) -> Result<(), AdapterError> {
-        ensure_sim_connected()?;
-
-        let mode_code = match mode {
-            ReplaySearchMode::ToStart => 0,
-            ReplaySearchMode::ToEnd => 1,
-            ReplaySearchMode::PrevSession => 2,
-            ReplaySearchMode::NextSession => 3,
-            ReplaySearchMode::PrevLap => 4,
-            ReplaySearchMode::NextLap => 5,
-            ReplaySearchMode::PrevFrame => 6,
-            ReplaySearchMode::NextFrame => 7,
-            ReplaySearchMode::PrevIncident => 8,
-            ReplaySearchMode::NextIncident => 9,
-        };
-        debug!(
-            "replay_search_event: sending ReplaySearch mode={:?} code={}",
-            mode, mode_code
-        );
-        let result = send_broadcast_message_2(BROADCAST_REPLAY_SEARCH, mode_code, 0);
-        debug!("replay_search_event: broadcast result={:?}", result);
-        result
-    }
-
-    fn camera_set_state_sync(&self, state_bits: i32) -> Result<(), AdapterError> {
-        if !(0..=0xFFFF).contains(&state_bits) {
-            return Err(AdapterError::InvalidArgument(
-                "state_bits must be in 0..=65535".to_string(),
-            ));
-        }
-
-        ensure_sim_connected()?;
-
-        debug!(
-            "camera_set_state: sending CamSetState state_bits={}",
-            state_bits
-        );
-        let result = send_broadcast_message_2(BROADCAST_CAM_SET_STATE, state_bits, 0);
-        debug!("camera_set_state: broadcast result={:?}", result);
-        result
-    }
-
-    fn camera_focus_sync(
-        &self,
-        car_idx: i32,
-        group_number: Option<i32>,
-        camera_number: Option<i32>,
-    ) -> Result<(), AdapterError> {
-        if car_idx < 0 {
-            return Err(AdapterError::InvalidArgument(
-                "car_idx must be non-negative".to_string(),
-            ));
-        }
-
-        let replay_state = self.replay_state_sync()?;
-        let group_number = group_number.unwrap_or(replay_state.cam_group_number);
-        let camera_number = camera_number.unwrap_or(replay_state.cam_camera_number);
-        let session_yaml = read_session_yaml()?;
-        let car_number = find_car_number_for_car_idx(&session_yaml, car_idx)?;
-        let padded_car_number = i32::from(pad_car_number(&car_number));
-
-        debug!(
-            "camera_focus: sending CamSwitchNum car_idx={} car_number={:?} padded={} group={} camera={}",
-            car_idx, car_number, padded_car_number, group_number, camera_number
-        );
-        let result = send_broadcast_message_3(
-            BROADCAST_CAM_SWITCH_NUM,
-            padded_car_number,
-            normalize_u16(group_number, "group_number")?,
-            normalize_u16(camera_number, "camera_number")?,
-        );
-        debug!("camera_focus: broadcast result={:?}", result);
-        result
+        assert_eq!(parse_count.load(Ordering::SeqCst), 2);
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(second["track"], "second");
     }
 }
 
@@ -443,6 +371,105 @@ impl SdkAdapter {
 #[async_trait]
 impl IracingAdapter for SdkAdapter {
     async fn get_session_overview(&self) -> SessionOverview {
+        match run_blocking(|| Ok(SdkAdapter.get_session_overview_sync())).await {
+            Ok(overview) => overview,
+            Err(error) => {
+                warn!(%error, "get_session_overview: blocking task unavailable");
+                SessionOverview {
+                    connected: false,
+                    is_replay: false,
+                    is_in_car: false,
+                    session_name: "Disconnected".to_string(),
+                    track_name: "Disconnected".to_string(),
+                }
+            }
+        }
+    }
+
+    async fn get_session_data(&self) -> Result<SessionData, AdapterError> {
+        run_blocking(|| SdkAdapter.session_data_sync()).await
+    }
+
+    async fn get_replay_state(&self) -> Result<ReplayState, AdapterError> {
+        run_blocking(|| SdkAdapter.replay_state_sync()).await
+    }
+
+    async fn set_replay_playback(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError> {
+        run_blocking(move || SdkAdapter.set_replay_playback_sync(speed, slow_motion)).await
+    }
+
+    async fn replay_seek_session_time(
+        &self,
+        session_num: i32,
+        session_time_ms: i32,
+    ) -> Result<(), AdapterError> {
+        run_blocking(move || SdkAdapter.replay_seek_session_time_sync(session_num, session_time_ms))
+            .await
+    }
+
+    async fn replay_seek_frame(
+        &self,
+        mode: ReplaySeekFrameMode,
+        frame: i32,
+    ) -> Result<(), AdapterError> {
+        run_blocking(move || SdkAdapter.replay_seek_frame_sync(mode, frame)).await
+    }
+
+    async fn replay_search_event(&self, mode: ReplaySearchMode) -> Result<(), AdapterError> {
+        run_blocking(move || SdkAdapter.replay_search_event_sync(mode)).await
+    }
+
+    async fn camera_set_state(&self, state_bits: i32) -> Result<(), AdapterError> {
+        run_blocking(move || SdkAdapter.camera_set_state_sync(state_bits)).await
+    }
+
+    async fn camera_focus(
+        &self,
+        car_idx: i32,
+        group_number: Option<i32>,
+        camera_number: Option<i32>,
+    ) -> Result<(), AdapterError> {
+        run_blocking(move || SdkAdapter.camera_focus_sync(car_idx, group_number, camera_number))
+            .await
+    }
+
+    async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError> {
+        run_blocking(|| SdkAdapter.get_weekend_info_sync()).await
+    }
+
+    async fn get_roster(
+        &self,
+        include_spectators: bool,
+        include_pace_car: bool,
+    ) -> Result<Roster, AdapterError> {
+        run_blocking(move || SdkAdapter.get_roster_sync(include_spectators, include_pace_car)).await
+    }
+
+    async fn get_camera_groups(&self) -> Result<CameraGroupList, AdapterError> {
+        run_blocking(|| SdkAdapter.get_camera_groups_sync()).await
+    }
+
+    async fn get_standings(&self, session_num: Option<i32>) -> Result<Standings, AdapterError> {
+        run_blocking(move || SdkAdapter.get_standings_sync(session_num)).await
+    }
+
+    async fn get_relatives(&self) -> Result<Relatives, AdapterError> {
+        run_blocking(|| SdkAdapter.get_relatives_sync()).await
+    }
+
+    async fn resolve_driver(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<ResolveDriverResult, AdapterError> {
+        let query = query.to_string();
+        run_blocking(move || SdkAdapter.resolve_driver_sync(&query, limit)).await
+    }
+}
+
+#[cfg(windows)]
+impl SdkAdapter {
+    fn get_session_overview_sync(&self) -> SessionOverview {
         // This tool never fails — a disconnected sim is a valid overview, not
         // an error — but the underlying reads can fail for reasons worth
         // knowing (unparseable session YAML, a missing telemetry var). Log
@@ -488,54 +515,203 @@ impl IracingAdapter for SdkAdapter {
         }
     }
 
-    async fn get_session_data(&self) -> Result<SessionData, AdapterError> {
-        self.session_data_sync()
+    fn session_data_sync(&self) -> Result<SessionData, AdapterError> {
+        let current_session_num = with_sdk_connection(|connection| {
+            let telemetry = connection
+                .connection
+                .telemetry()
+                .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+            read_i32(&telemetry, "SessionNum")
+        })?;
+        let session_yaml = read_session_yaml()?;
+
+        parse_session_data(&session_yaml, current_session_num)
     }
 
-    async fn get_replay_state(&self) -> Result<ReplayState, AdapterError> {
-        self.replay_state_sync()
+    fn replay_state_sync(&self) -> Result<ReplayState, AdapterError> {
+        let state = with_sdk_connection(|connection| {
+            let sample = connection
+                .connection
+                .telemetry()
+                .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+
+            Ok(ReplayState {
+                connected: true,
+                is_on_track: read_bool(&sample, "IsOnTrack")?,
+                is_in_garage: read_bool(&sample, "IsInGarage")?,
+                is_replay_playing: read_bool(&sample, "IsReplayPlaying")?,
+                replay_play_speed: read_i32(&sample, "ReplayPlaySpeed")?,
+                replay_play_slow_motion: read_bool(&sample, "ReplayPlaySlowMotion")?,
+                replay_frame_num: read_i32(&sample, "ReplayFrameNum")?,
+                replay_frame_num_end: read_i32(&sample, "ReplayFrameNumEnd")?,
+                replay_session_num: read_i32(&sample, "ReplaySessionNum")?,
+                replay_session_time: read_f64(&sample, "ReplaySessionTime")?,
+                cam_car_idx: read_i32(&sample, "CamCarIdx")?,
+                cam_group_number: read_i32(&sample, "CamGroupNumber")?,
+                cam_camera_number: read_i32(&sample, "CamCameraNumber")?,
+                cam_camera_state: read_i32(&sample, "CamCameraState")?,
+            })
+        })?;
+        debug!(
+            "replay_state_sync: speed={} playing={} slow={} frame={} session_num={} session_time={:.3} cam_car={} cam_group={} cam_camera={} on_track={} in_garage={}",
+            state.replay_play_speed, state.is_replay_playing, state.replay_play_slow_motion,
+            state.replay_frame_num, state.replay_session_num, state.replay_session_time,
+            state.cam_car_idx, state.cam_group_number, state.cam_camera_number,
+            state.is_on_track, state.is_in_garage
+        );
+        Ok(state)
     }
 
-    async fn set_replay_playback(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError> {
-        self.set_replay_playback_sync(speed, slow_motion)
+    fn set_replay_playback_sync(&self, speed: i32, slow_motion: bool) -> Result<(), AdapterError> {
+        if !(0..=255).contains(&speed) {
+            return Err(AdapterError::UnsupportedReplaySpeed(speed));
+        }
+
+        ensure_sdk_connection()?;
+
+        debug!(
+            "set_replay_playback: sending ReplaySetPlaySpeed speed={} slow_motion={}",
+            speed, slow_motion
+        );
+        let result = send_replay_set_play_speed(speed, slow_motion);
+        debug!("set_replay_playback: broadcast result={:?}", result);
+        result
     }
 
-    async fn replay_seek_session_time(
+    fn replay_seek_session_time_sync(
         &self,
         session_num: i32,
         session_time_ms: i32,
     ) -> Result<(), AdapterError> {
-        self.replay_seek_session_time_sync(session_num, session_time_ms)
+        if session_num < 0 {
+            return Err(AdapterError::InvalidArgument(
+                "session_num must be non-negative".to_string(),
+            ));
+        }
+
+        if session_time_ms < 0 {
+            return Err(AdapterError::InvalidArgument(
+                "session_time_ms must be non-negative".to_string(),
+            ));
+        }
+
+        ensure_sdk_connection()?;
+
+        let session_time = session_time_ms as u32;
+        let time_lo = (session_time & 0xFFFF) as i32;
+        let time_hi = ((session_time >> 16) & 0xFFFF) as i32;
+        debug!(
+            "replay_seek_session_time: sending ReplaySearchSessionTime session_num={} session_time_ms={} time_lo=0x{:04X} time_hi=0x{:04X}",
+            session_num, session_time_ms, time_lo, time_hi
+        );
+        let result = send_broadcast_message_3(
+            BROADCAST_REPLAY_SEARCH_SESSION_TIME,
+            session_num,
+            time_lo,
+            time_hi,
+        );
+        debug!("replay_seek_session_time: broadcast result={:?}", result);
+        result
     }
 
-    async fn replay_seek_frame(
+    fn replay_seek_frame_sync(
         &self,
         mode: ReplaySeekFrameMode,
         frame: i32,
     ) -> Result<(), AdapterError> {
-        self.replay_seek_frame_sync(mode, frame)
+        ensure_sdk_connection()?;
+
+        let mode_code = match mode {
+            ReplaySeekFrameMode::Begin => 0,
+            ReplaySeekFrameMode::Current => 1,
+            ReplaySeekFrameMode::End => 2,
+        };
+        debug!(
+            "replay_seek_frame: sending ReplaySetPlayPosition mode={:?} frame={}",
+            mode, frame
+        );
+        let result = send_broadcast_message_2(BROADCAST_REPLAY_SET_PLAY_POSITION, mode_code, frame);
+        debug!("replay_seek_frame: broadcast result={:?}", result);
+        result
     }
 
-    async fn replay_search_event(&self, mode: ReplaySearchMode) -> Result<(), AdapterError> {
-        self.replay_search_event_sync(mode)
+    fn replay_search_event_sync(&self, mode: ReplaySearchMode) -> Result<(), AdapterError> {
+        ensure_sdk_connection()?;
+
+        let mode_code = match mode {
+            ReplaySearchMode::ToStart => 0,
+            ReplaySearchMode::ToEnd => 1,
+            ReplaySearchMode::PrevSession => 2,
+            ReplaySearchMode::NextSession => 3,
+            ReplaySearchMode::PrevLap => 4,
+            ReplaySearchMode::NextLap => 5,
+            ReplaySearchMode::PrevFrame => 6,
+            ReplaySearchMode::NextFrame => 7,
+            ReplaySearchMode::PrevIncident => 8,
+            ReplaySearchMode::NextIncident => 9,
+        };
+        debug!(
+            "replay_search_event: sending ReplaySearch mode={:?} code={}",
+            mode, mode_code
+        );
+        let result = send_broadcast_message_2(BROADCAST_REPLAY_SEARCH, mode_code, 0);
+        debug!("replay_search_event: broadcast result={:?}", result);
+        result
     }
 
-    async fn camera_set_state(&self, state_bits: i32) -> Result<(), AdapterError> {
-        self.camera_set_state_sync(state_bits)
+    fn camera_set_state_sync(&self, state_bits: i32) -> Result<(), AdapterError> {
+        if !(0..=0xFFFF).contains(&state_bits) {
+            return Err(AdapterError::InvalidArgument(
+                "state_bits must be in 0..=65535".to_string(),
+            ));
+        }
+
+        ensure_sdk_connection()?;
+
+        debug!(
+            "camera_set_state: sending CamSetState state_bits={}",
+            state_bits
+        );
+        let result = send_broadcast_message_2(BROADCAST_CAM_SET_STATE, state_bits, 0);
+        debug!("camera_set_state: broadcast result={:?}", result);
+        result
     }
 
-    async fn camera_focus(
+    fn camera_focus_sync(
         &self,
         car_idx: i32,
         group_number: Option<i32>,
         camera_number: Option<i32>,
     ) -> Result<(), AdapterError> {
-        self.camera_focus_sync(car_idx, group_number, camera_number)
+        if car_idx < 0 {
+            return Err(AdapterError::InvalidArgument(
+                "car_idx must be non-negative".to_string(),
+            ));
+        }
+
+        let replay_state = self.replay_state_sync()?;
+        let group_number = group_number.unwrap_or(replay_state.cam_group_number);
+        let camera_number = camera_number.unwrap_or(replay_state.cam_camera_number);
+        let session_yaml = read_session_yaml()?;
+        let car_number = find_car_number_for_car_idx(&session_yaml, car_idx)?;
+        let padded_car_number = i32::from(pad_car_number(&car_number));
+
+        debug!(
+            "camera_focus: sending CamSwitchNum car_idx={} car_number={:?} padded={} group={} camera={}",
+            car_idx, car_number, padded_car_number, group_number, camera_number
+        );
+        let result = send_broadcast_message_3(
+            BROADCAST_CAM_SWITCH_NUM,
+            padded_car_number,
+            normalize_u16(group_number, "group_number")?,
+            normalize_u16(camera_number, "camera_number")?,
+        );
+        debug!("camera_focus: broadcast result={:?}", result);
+        result
     }
 
-    async fn get_weekend_info(&self) -> Result<WeekendInfo, AdapterError> {
-        let yaml = read_session_yaml()?;
-        let root = parse_session_root(&yaml)?;
+    fn get_weekend_info_sync(&self) -> Result<WeekendInfo, AdapterError> {
+        let root = read_session_yaml()?;
         let wi = |k: &str| -> String {
             yaml_str_at(&root, &["WeekendInfo", k])
                 .unwrap_or_default()
@@ -606,13 +782,12 @@ impl IracingAdapter for SdkAdapter {
         })
     }
 
-    async fn get_roster(
+    fn get_roster_sync(
         &self,
         include_spectators: bool,
         include_pace_car: bool,
     ) -> Result<Roster, AdapterError> {
-        let yaml = read_session_yaml()?;
-        let root = parse_session_root(&yaml)?;
+        let root = read_session_yaml()?;
         let drivers = yaml_seq_at(&root, &["DriverInfo", "Drivers"])?;
 
         let str_field = |d: &YamlValue, k: &str| -> String {
@@ -675,9 +850,8 @@ impl IracingAdapter for SdkAdapter {
         Ok(Roster { entries, count })
     }
 
-    async fn get_camera_groups(&self) -> Result<CameraGroupList, AdapterError> {
-        let yaml = read_session_yaml()?;
-        let root = parse_session_root(&yaml)?;
+    fn get_camera_groups_sync(&self) -> Result<CameraGroupList, AdapterError> {
+        let root = read_session_yaml()?;
         let groups_yaml = yaml_seq_at(&root, &["CameraInfo", "Groups"])?;
 
         let mut groups: Vec<CameraGroup> = groups_yaml
@@ -716,9 +890,8 @@ impl IracingAdapter for SdkAdapter {
         Ok(CameraGroupList { groups, count })
     }
 
-    async fn get_standings(&self, session_num: Option<i32>) -> Result<Standings, AdapterError> {
-        let yaml = read_session_yaml()?;
-        let root = parse_session_root(&yaml)?;
+    fn get_standings_sync(&self, session_num: Option<i32>) -> Result<Standings, AdapterError> {
+        let root = read_session_yaml()?;
         let sessions = yaml_seq_at(&root, &["SessionInfo", "Sessions"])?;
 
         // Determine which session to use
@@ -726,12 +899,13 @@ impl IracingAdapter for SdkAdapter {
             Some(n) => n,
             None => {
                 // fall back to telemetry SessionNum
-                let connection = iracing::Connection::new()
-                    .map_err(|e| AdapterError::NotConnected(e.to_string()))?;
-                let sample = connection
-                    .telemetry()
-                    .map_err(|e| AdapterError::NotConnected(e.to_string()))?;
-                read_i32(&sample, "SessionNum").unwrap_or(0)
+                with_sdk_connection(|connection| {
+                    let sample = connection
+                        .connection
+                        .telemetry()
+                        .map_err(|e| AdapterError::NotConnected(e.to_string()))?;
+                    Ok(read_i32(&sample, "SessionNum").unwrap_or(0))
+                })?
             }
         };
 
@@ -792,24 +966,25 @@ impl IracingAdapter for SdkAdapter {
         })
     }
 
-    async fn get_relatives(&self) -> Result<Relatives, AdapterError> {
+    fn get_relatives_sync(&self) -> Result<Relatives, AdapterError> {
         // Ensure session data is available (and any related connection issues
         // surface as an error) before reading telemetry arrays below.
         let _session_data = self.session_data_sync()?;
-        let roster = self.get_roster(false, false).await?;
-        let connection = iracing::Connection::new()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
-        let sample = connection
-            .telemetry()
-            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        let roster = self.get_roster_sync(false, false)?;
+        let telemetry = with_sdk_connection(|connection| {
+            connection
+                .connection
+                .telemetry()
+                .map_err(|error| AdapterError::NotConnected(error.to_string()))
+        })?;
 
-        let session_num = read_i32(&sample, "SessionNum")?;
-        let class_positions = read_i32_vec(&sample, "CarIdxClassPosition")?;
-        let laps = read_i32_vec(&sample, "CarIdxLap")?;
-        let lap_dist_pcts = read_f32_vec(&sample, "CarIdxLapDistPct")?;
-        let on_pit_road = read_bool_vec(&sample, "CarIdxOnPitRoad")?;
-        let est_times = read_f32_vec(&sample, "CarIdxEstTime")?;
-        let f2_times = read_f32_vec(&sample, "CarIdxF2Time")?;
+        let session_num = read_i32(&telemetry, "SessionNum")?;
+        let class_positions = read_i32_vec(&telemetry, "CarIdxClassPosition")?;
+        let laps = read_i32_vec(&telemetry, "CarIdxLap")?;
+        let lap_dist_pcts = read_f32_vec(&telemetry, "CarIdxLapDistPct")?;
+        let on_pit_road = read_bool_vec(&telemetry, "CarIdxOnPitRoad")?;
+        let est_times = read_f32_vec(&telemetry, "CarIdxEstTime")?;
+        let f2_times = read_f32_vec(&telemetry, "CarIdxF2Time")?;
 
         #[derive(Clone)]
         struct RawRelative {
@@ -940,12 +1115,12 @@ impl IracingAdapter for SdkAdapter {
         })
     }
 
-    async fn resolve_driver(
+    fn resolve_driver_sync(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<ResolveDriverResult, AdapterError> {
-        let roster = self.get_roster(false, false).await?;
+        let roster = self.get_roster_sync(false, false)?;
         let q = query.to_lowercase();
         let mut scored: Vec<DriverMatch> = roster
             .entries
@@ -1078,14 +1253,12 @@ fn read_bool_vec(
 
 #[cfg(windows)]
 fn parse_session_data(
-    session_yaml: &str,
+    root: &YamlValue,
     current_session_num: i32,
 ) -> Result<SessionData, AdapterError> {
-    let root = parse_session_root(session_yaml)?;
-
-    let track_display_name = yaml_str_at(&root, &["WeekendInfo", "TrackDisplayName"])?.to_string();
-    let sessions = yaml_seq_at(&root, &["SessionInfo", "Sessions"])?;
-    let driver_count = yaml_seq_at(&root, &["DriverInfo", "Drivers"])?.len();
+    let track_display_name = yaml_str_at(root, &["WeekendInfo", "TrackDisplayName"])?.to_string();
+    let sessions = yaml_seq_at(root, &["SessionInfo", "Sessions"])?;
+    let driver_count = yaml_seq_at(root, &["DriverInfo", "Drivers"])?.len();
 
     let current_session_type = sessions
         .iter()
@@ -1113,9 +1286,8 @@ fn parse_session_root(session_yaml: &str) -> Result<YamlValue, AdapterError> {
 }
 
 #[cfg(windows)]
-fn find_car_number_for_car_idx(session_yaml: &str, car_idx: i32) -> Result<String, AdapterError> {
-    let root = parse_session_root(session_yaml)?;
-    let drivers = yaml_seq_at(&root, &["DriverInfo", "Drivers"])?;
+fn find_car_number_for_car_idx(root: &YamlValue, car_idx: i32) -> Result<String, AdapterError> {
+    let drivers = yaml_seq_at(root, &["DriverInfo", "Drivers"])?;
 
     let driver = drivers
         .iter()
@@ -1271,85 +1443,110 @@ fn wide_string(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-/// Opens the SDK shared-memory mapping just to check the header's `status`
-/// bit, without reading session YAML or telemetry. Used as a fail-fast guard
-/// by tools that talk to the SDK via the `iracing`/`iracing-broadcast` crates,
-/// neither of which checks this bit themselves.
-fn ensure_sim_connected() -> Result<(), AdapterError> {
-    let path = wide_string(IRSDK_MEMMAPFILENAME);
+async fn run_blocking<T, F>(operation: F) -> Result<T, AdapterError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AdapterError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| AdapterError::Internal(format!("blocking SDK task failed: {error}")))?
+}
 
-    unsafe {
-        let mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, path.as_ptr());
-        if mapping.is_null() {
-            return Err(AdapterError::NotConnected(
-                std::io::Error::from_raw_os_error(GetLastError() as i32).to_string(),
-            ));
+#[cfg(windows)]
+fn with_sdk_connection<T, F>(operation: F) -> Result<T, AdapterError>
+where
+    F: FnOnce(&SdkConnection) -> Result<T, AdapterError>,
+{
+    let state = SDK_CONNECTION.get_or_init(|| Mutex::new(None));
+    let mut guard = state.lock().map_err(|_| {
+        AdapterError::NotConnected("iRacing SDK connection lock poisoned".to_string())
+    })?;
+    if guard.is_none() {
+        *guard = Some(SdkConnection::new()?);
+    }
+
+    let status = guard
+        .as_ref()
+        .ok_or_else(|| {
+            AdapterError::NotConnected("iRacing SDK connection is unavailable".to_string())
+        })?
+        .ensure_connected();
+    if let Err(error) = status {
+        *guard = None;
+        return Err(error);
+    }
+
+    let result = {
+        let sdk = guard.as_ref().ok_or_else(|| {
+            AdapterError::NotConnected("iRacing SDK connection is unavailable".to_string())
+        })?;
+        operation(sdk)
+    };
+    if result.is_err() {
+        *guard = None;
+    }
+    result
+}
+
+#[cfg(windows)]
+fn ensure_sdk_connection() -> Result<(), AdapterError> {
+    with_sdk_connection(|_| Ok(()))
+}
+
+#[cfg(windows)]
+fn read_session_yaml() -> Result<Arc<YamlValue>, AdapterError> {
+    let cache = SESSION_YAML_CACHE.get_or_init(|| Mutex::new(None));
+
+    let (session_info_update, session_yaml) =
+        with_sdk_connection(|sdk| unsafe { read_session_yaml_from_view(sdk.view) })?;
+    cache_parsed_document(
+        cache,
+        session_info_update,
+        &session_yaml,
+        parse_session_root,
+    )
+}
+
+#[cfg(windows)]
+impl SdkConnection {
+    fn new() -> Result<Self, AdapterError> {
+        let connection = iracing::Connection::new()
+            .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
+        let path = wide_string(IRSDK_MEMMAPFILENAME);
+
+        unsafe {
+            let mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, path.as_ptr());
+            if mapping.is_null() {
+                return Err(AdapterError::NotConnected(
+                    std::io::Error::from_raw_os_error(GetLastError() as i32).to_string(),
+                ));
+            }
+
+            let view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+            if view.is_null() {
+                let error = std::io::Error::from_raw_os_error(GetLastError() as i32).to_string();
+                CloseHandle(mapping);
+                return Err(AdapterError::NotConnected(error));
+            }
+
+            Ok(Self {
+                connection,
+                mapping,
+                view,
+            })
         }
+    }
 
-        let view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-        if view.is_null() {
-            let error = std::io::Error::from_raw_os_error(GetLastError() as i32).to_string();
-            CloseHandle(mapping);
-            return Err(AdapterError::NotConnected(error));
-        }
-
-        let status = (*(view as *const IrsdkHeaderPrefix)).status;
-        UnmapViewOfFile(view);
-        CloseHandle(mapping);
-
+    fn ensure_connected(&self) -> Result<(), AdapterError> {
+        let status = unsafe { (*(self.view as *const IrsdkHeaderPrefix)).status };
         if status & IRSDK_STATUS_CONNECTED == 0 {
             return Err(AdapterError::NotConnected(
                 "iRacing SDK shared memory is mapped but reports the simulator is not connected"
                     .to_string(),
             ));
         }
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn read_session_yaml() -> Result<String, AdapterError> {
-    let path = wide_string(IRSDK_MEMMAPFILENAME);
-
-    unsafe {
-        let mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, path.as_ptr());
-        if mapping.is_null() {
-            return Err(AdapterError::NotConnected(
-                std::io::Error::from_raw_os_error(GetLastError() as i32).to_string(),
-            ));
-        }
-
-        let view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-        if view.is_null() {
-            let error = std::io::Error::from_raw_os_error(GetLastError() as i32).to_string();
-            CloseHandle(mapping);
-            return Err(AdapterError::NotConnected(error));
-        }
-
-        let result = read_session_yaml_from_view(view);
-
-        UnmapViewOfFile(view);
-        CloseHandle(mapping);
-
-        let (session_info_update, yaml) = result?;
-        let cache = SESSION_YAML_CACHE.get_or_init(|| Mutex::new(None));
-        let mut guard = cache.lock().map_err(|_| {
-            AdapterError::SessionInfo("session YAML cache lock poisoned".to_string())
-        })?;
-
-        if let Some(cached) = guard.as_ref() {
-            if cached.session_info_update == session_info_update {
-                return Ok(cached.yaml.clone());
-            }
-        }
-
-        *guard = Some(SessionYamlCache {
-            session_info_update,
-            yaml: yaml.clone(),
-        });
-
-        Ok(yaml)
+        Ok(())
     }
 }
 
