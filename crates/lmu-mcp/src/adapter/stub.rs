@@ -5,6 +5,7 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use mcp_core::SnapshotMeta;
 
 use super::CameraFocusState;
 use super::{
@@ -64,6 +65,10 @@ impl Default for StubAdapter {
 
 #[async_trait]
 impl LmuAdapter for StubAdapter {
+    async fn snapshot_meta(&self) -> SnapshotMeta {
+        SnapshotMeta::unavailable()
+    }
+
     async fn get_session_overview(&self) -> SessionOverview {
         let state = self.state.lock().expect("not poisoned").clone();
         SessionOverview {

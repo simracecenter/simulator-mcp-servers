@@ -20,7 +20,7 @@ fn build_app() -> axum::Router {
 }
 
 // ── helper ──────────────────────────────────────────────────────────────────
-async fn mcp_call(name: &str, arguments: Value) -> Value {
+async fn mcp_call_json(name: &str, arguments: Value) -> Value {
     let app = build_app();
     let body = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -40,6 +40,11 @@ async fn mcp_call(name: &str, arguments: Value) -> Value {
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
+    json
+}
+
+async fn mcp_call(name: &str, arguments: Value) -> Value {
+    let json = mcp_call_json(name, arguments).await;
     assert_eq!(
         json["result"]["content"][0]["type"],
         Value::String("text".into())
@@ -47,6 +52,31 @@ async fn mcp_call(name: &str, arguments: Value) -> Value {
     assert!(json["result"]["content"][0]["text"].is_string());
     assert_eq!(json["result"]["isError"], Value::Bool(false));
     json["result"]["structuredContent"]["data"].clone()
+}
+
+async fn mcp_call_envelope(name: &str, arguments: Value) -> Value {
+    let json = mcp_call_json(name, arguments).await;
+    let text: Value =
+        serde_json::from_str(json["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, json["result"]["structuredContent"]);
+    json["result"]["structuredContent"].clone()
+}
+
+fn assert_full_meta(meta: &Value) {
+    let object = meta.as_object().expect("metadata object");
+    for key in [
+        "sessionTick",
+        "sessionTime",
+        "capturedAtUnixMs",
+        "ageMs",
+        "stale",
+        "sessionKey",
+        "sessionRevision",
+        "serverElapsedMs",
+    ] {
+        assert!(object.contains_key(key), "missing metadata key {key}");
+    }
+    assert!(meta["serverElapsedMs"].is_u64());
 }
 
 #[tokio::test]
@@ -134,6 +164,36 @@ async fn http_mcp_initialize_and_tools_call_work() {
         call_json["result"]["structuredContent"]["data"]["connected"],
         Value::Bool(true)
     );
+    assert_full_meta(&call_json["result"]["structuredContent"]["meta"]);
+}
+
+#[tokio::test]
+async fn http_mcp_meta_is_coherent_on_reads_commands_and_errors() {
+    let read = mcp_call_envelope("replay_get_state", json!({})).await;
+    assert_full_meta(&read["meta"]);
+    assert_eq!(read["meta"]["sessionTick"], json!(12_345));
+    assert_eq!(read["meta"]["sessionTime"], json!(205.25));
+
+    let command = mcp_call_envelope(
+        "replay_set_playback",
+        json!({ "speed": 0, "slowMotion": false }),
+    )
+    .await;
+    assert_full_meta(&command["meta"]);
+    assert!(command["meta"]["serverElapsedMs"].is_u64());
+
+    let error = mcp_call_envelope("camera_focus", json!({})).await;
+    assert_eq!(error["ok"], Value::Bool(false));
+    assert_full_meta(&error["meta"]);
+}
+
+#[tokio::test]
+async fn http_mcp_unknown_tool_remains_jsonrpc_error() {
+    let response = mcp_call_json("not_a_tool", json!({})).await;
+
+    assert_eq!(response["error"]["code"], Value::from(-32602));
+    assert!(response["result"].is_null());
+    assert!(response["structuredContent"].is_null());
 }
 
 #[tokio::test]
@@ -606,4 +666,5 @@ async fn http_mcp_tool_errors_use_text_and_structured_content() {
         bad_json["result"]["structuredContent"]["error"]["code"],
         Value::String("invalid_arguments".into())
     );
+    assert_full_meta(&bad_json["result"]["structuredContent"]["meta"]);
 }

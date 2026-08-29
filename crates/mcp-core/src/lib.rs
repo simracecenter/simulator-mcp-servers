@@ -9,8 +9,10 @@
 pub mod capabilities;
 pub mod config;
 pub mod jsonrpc;
+pub mod metadata;
 pub mod transport;
 pub mod verify;
 
 pub use capabilities::{CapabilityStatus, ToolCapability};
 pub use jsonrpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpHandler};
+pub use metadata::{Read, SnapshotMeta};

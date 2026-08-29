@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use iracing_mcp::{adapter, IracingMcpHandler};
-use mcp_core::transport::http::build_router;
+use mcp_core::{transport::http::build_router, Read, SnapshotMeta};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -25,6 +25,22 @@ struct ScriptedAdapterInner {
     current: adapter::ReplayState,
     active: Option<VecDeque<adapter::ReplayState>>,
     scripts: HashMap<&'static str, VecDeque<VecDeque<adapter::ReplayState>>>,
+}
+
+fn scripted_read<T>(data: T, state: &adapter::ReplayState) -> Read<T> {
+    Read {
+        data,
+        meta: SnapshotMeta {
+            session_tick: Some(state.replay_frame_num),
+            session_time: Some(state.replay_session_time),
+            captured_at_unix_ms: Some(1),
+            age_ms: Some(0),
+            stale: Some(false),
+            session_key: Some("scripted:1:0".to_string()),
+            session_revision: Some(0),
+            server_elapsed_ms: 0,
+        },
+    }
 }
 
 impl ScriptedAdapter {
@@ -57,27 +73,34 @@ impl ScriptedAdapter {
 
 #[async_trait]
 impl adapter::IracingAdapter for ScriptedAdapter {
-    async fn get_session_overview(&self) -> adapter::SessionOverview {
-        let current = self.get_replay_state().await.expect("replay state");
-        adapter::SessionOverview {
-            connected: current.connected,
-            is_replay: current.is_replay_playing || current.replay_frame_num > 0,
-            is_in_car: current.is_on_track || current.is_in_garage,
-            session_name: "Scripted".to_string(),
-            track_name: "Scripted Track".to_string(),
-        }
+    async fn get_session_overview(&self) -> Read<adapter::SessionOverview> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        scripted_read(
+            adapter::SessionOverview {
+                connected: current.connected,
+                is_replay: current.is_replay_playing || current.replay_frame_num > 0,
+                is_in_car: current.is_on_track || current.is_in_garage,
+                session_name: "Scripted".to_string(),
+                track_name: "Scripted Track".to_string(),
+            },
+            &current,
+        )
     }
 
-    async fn get_session_data(&self) -> Result<adapter::SessionData, adapter::AdapterError> {
-        Ok(adapter::SessionData {
-            track_display_name: "Scripted Track".to_string(),
-            current_session_type: "Race".to_string(),
-            driver_count: 2,
-            session_count: 1,
-        })
+    async fn get_session_data(&self) -> Result<Read<adapter::SessionData>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::SessionData {
+                track_display_name: "Scripted Track".to_string(),
+                current_session_type: "Race".to_string(),
+                driver_count: 2,
+                session_count: 1,
+            },
+            &current,
+        ))
     }
 
-    async fn get_replay_state(&self) -> Result<adapter::ReplayState, adapter::AdapterError> {
+    async fn get_replay_state(&self) -> Result<Read<adapter::ReplayState>, adapter::AdapterError> {
         let mut inner = self.inner.lock().expect("not poisoned");
 
         if let Some(next) = inner.active.as_mut().and_then(VecDeque::pop_front) {
@@ -85,14 +108,15 @@ impl adapter::IracingAdapter for ScriptedAdapter {
             if inner.active.as_ref().is_some_and(VecDeque::is_empty) {
                 inner.active = None;
             }
-            return Ok(next);
+            return Ok(scripted_read(next, &inner.current));
         }
 
         if inner.active.as_ref().is_some_and(VecDeque::is_empty) {
             inner.active = None;
         }
 
-        Ok(inner.current.clone())
+        let current = inner.current.clone();
+        Ok(scripted_read(current.clone(), &current))
     }
 
     async fn set_replay_playback(
@@ -189,82 +213,112 @@ impl adapter::IracingAdapter for ScriptedAdapter {
         Ok(())
     }
 
-    async fn get_weekend_info(&self) -> Result<adapter::WeekendInfo, adapter::AdapterError> {
-        Ok(adapter::WeekendInfo {
-            track_name: "scripted_track".to_string(),
-            track_id: 1,
-            track_display_name: "Scripted Track".to_string(),
-            track_config_name: "Full".to_string(),
-            track_length_km: 5.0,
-            track_city: "Scripted City".to_string(),
-            track_country: "Scripted Country".to_string(),
-            track_num_turns: 8,
-            track_pit_speed_limit_kph: 60.0,
-            track_type: "Road".to_string(),
-            series_id: 1,
-            season_id: 1,
-            session_id: 1,
-            sub_session_id: 1,
-            official: false,
-            event_type: "Race".to_string(),
-            category: "Road".to_string(),
-            sim_mode: "Full".to_string(),
-            team_racing: false,
-            weather_type: "Constant".to_string(),
-            skies: "Clear".to_string(),
-            surface_temp_c: 30.0,
-            air_temp_c: 20.0,
-            wind_vel_ms: 1.0,
-        })
+    async fn get_weekend_info(&self) -> Result<Read<adapter::WeekendInfo>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::WeekendInfo {
+                track_name: "scripted_track".to_string(),
+                track_id: 1,
+                track_display_name: "Scripted Track".to_string(),
+                track_config_name: "Full".to_string(),
+                track_length_km: 5.0,
+                track_city: "Scripted City".to_string(),
+                track_country: "Scripted Country".to_string(),
+                track_num_turns: 8,
+                track_pit_speed_limit_kph: 60.0,
+                track_type: "Road".to_string(),
+                series_id: 1,
+                season_id: 1,
+                session_id: 1,
+                sub_session_id: 1,
+                official: false,
+                event_type: "Race".to_string(),
+                category: "Road".to_string(),
+                sim_mode: "Full".to_string(),
+                team_racing: false,
+                weather_type: "Constant".to_string(),
+                skies: "Clear".to_string(),
+                surface_temp_c: 30.0,
+                air_temp_c: 20.0,
+                wind_vel_ms: 1.0,
+            },
+            &current,
+        ))
     }
 
     async fn get_roster(
         &self,
         _include_spectators: bool,
         _include_pace_car: bool,
-    ) -> Result<adapter::Roster, adapter::AdapterError> {
-        Ok(adapter::Roster {
-            entries: vec![],
-            count: 0,
-        })
+    ) -> Result<Read<adapter::Roster>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::Roster {
+                entries: vec![],
+                count: 0,
+            },
+            &current,
+        ))
     }
 
-    async fn get_camera_groups(&self) -> Result<adapter::CameraGroupList, adapter::AdapterError> {
-        Ok(adapter::CameraGroupList {
-            groups: vec![],
-            count: 0,
-        })
+    async fn get_camera_groups(
+        &self,
+    ) -> Result<Read<adapter::CameraGroupList>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::CameraGroupList {
+                groups: vec![],
+                count: 0,
+            },
+            &current,
+        ))
     }
 
     async fn get_standings(
         &self,
         _session_num: Option<i32>,
-    ) -> Result<adapter::Standings, adapter::AdapterError> {
-        Ok(adapter::Standings {
-            session_num: 0,
-            session_type: "Race".to_string(),
-            positions: vec![],
-        })
+    ) -> Result<Read<adapter::Standings>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::Standings {
+                session_num: 0,
+                session_type: "Race".to_string(),
+                positions: vec![],
+            },
+            &current,
+        ))
     }
 
-    async fn get_relatives(&self) -> Result<adapter::Relatives, adapter::AdapterError> {
-        Ok(adapter::Relatives {
-            basis: "track".to_string(),
-            session_num: 0,
-            entries: vec![],
-            count: 0,
-        })
+    async fn get_relatives(&self) -> Result<Read<adapter::Relatives>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::Relatives {
+                basis: "track".to_string(),
+                session_num: 0,
+                entries: vec![],
+                count: 0,
+            },
+            &current,
+        ))
     }
 
     async fn resolve_driver(
         &self,
         _query: &str,
         _limit: usize,
-    ) -> Result<adapter::ResolveDriverResult, adapter::AdapterError> {
-        Ok(adapter::ResolveDriverResult {
-            best_match: None,
-            candidates: vec![],
-        })
+    ) -> Result<Read<adapter::ResolveDriverResult>, adapter::AdapterError> {
+        let current = self.get_replay_state().await.expect("replay state").data;
+        Ok(scripted_read(
+            adapter::ResolveDriverResult {
+                best_match: None,
+                candidates: vec![],
+            },
+            &current,
+        ))
+    }
+
+    async fn snapshot_meta(&self) -> SnapshotMeta {
+        SnapshotMeta::unavailable()
     }
 }
 

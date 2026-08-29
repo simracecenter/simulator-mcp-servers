@@ -6,10 +6,12 @@
 //! promoted out of `iracing-mcp` for #8).
 
 use async_trait::async_trait;
+use mcp_core::metadata::finalize_tool_result;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
-use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, ToolCapability};
+use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, SnapshotMeta, ToolCapability};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Instant;
 use tokio::time::Duration;
 use tracing::warn;
 
@@ -279,12 +281,13 @@ fn capabilities() -> Vec<ToolCapability> {
 
 impl LmuMcpHandler {
     async fn tools_call(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
+        let started = Instant::now();
         let name = params
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        match name {
+        let response = match name {
             "get_session_overview" => {
                 let overview = self.adapter.get_session_overview().await;
                 tool_ok(id, overview)
@@ -334,7 +337,7 @@ impl LmuMcpHandler {
                 let args: ReplaySeekSessionTimeArgs =
                     match parse_tool_args(&id, &params, "replay_seek_session_time") {
                         Ok(args) => args,
-                        Err(response) => return response,
+                        Err(response) => return self.finalize_tool_result(response, started).await,
                     };
                 match self
                     .adapter
@@ -347,7 +350,28 @@ impl LmuMcpHandler {
             }
             "get_capabilities" => tool_ok(id, capabilities()),
             _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
-        }
+        };
+        self.finalize_tool_result(response, started).await
+    }
+
+    async fn finalize_tool_result(
+        &self,
+        mut response: JsonRpcResponse,
+        started: Instant,
+    ) -> JsonRpcResponse {
+        let Some(result) = response.result.as_mut() else {
+            return response;
+        };
+        let Some(payload) = result.get("structuredContent").and_then(Value::as_object) else {
+            return response;
+        };
+        let fallback = if payload.get("meta").is_some_and(Value::is_object) {
+            SnapshotMeta::unavailable()
+        } else {
+            self.adapter.snapshot_meta().await
+        };
+        finalize_tool_result(result, fallback, started.elapsed().as_millis() as u64);
+        response
     }
 
     /// Sends an `rF2HWControl` command and verifies it via `get_pit_info`.
