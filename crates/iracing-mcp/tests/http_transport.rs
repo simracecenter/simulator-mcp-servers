@@ -20,7 +20,7 @@ fn build_app() -> axum::Router {
 }
 
 // ── helper ──────────────────────────────────────────────────────────────────
-async fn mcp_call(name: &str, arguments: Value) -> Value {
+async fn mcp_call_json(name: &str, arguments: Value) -> Value {
     let app = build_app();
     let body = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -40,6 +40,11 @@ async fn mcp_call(name: &str, arguments: Value) -> Value {
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
+    json
+}
+
+async fn mcp_call(name: &str, arguments: Value) -> Value {
+    let json = mcp_call_json(name, arguments).await;
     assert_eq!(
         json["result"]["content"][0]["type"],
         Value::String("text".into())
@@ -50,25 +55,7 @@ async fn mcp_call(name: &str, arguments: Value) -> Value {
 }
 
 async fn mcp_call_envelope(name: &str, arguments: Value) -> Value {
-    let app = build_app();
-    let body = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": name, "arguments": arguments }
-    });
-    let res = app
-        .oneshot(
-            Request::builder()
-                .uri("/mcp")
-                .method("POST")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
-    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    let json = mcp_call_json(name, arguments).await;
     let text: Value =
         serde_json::from_str(json["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(text, json["result"]["structuredContent"]);
@@ -195,9 +182,18 @@ async fn http_mcp_meta_is_coherent_on_reads_commands_and_errors() {
     assert_full_meta(&command["meta"]);
     assert!(command["meta"]["serverElapsedMs"].is_u64());
 
-    let error = mcp_call_envelope("not_a_tool", json!({})).await;
+    let error = mcp_call_envelope("camera_focus", json!({})).await;
     assert_eq!(error["ok"], Value::Bool(false));
     assert_full_meta(&error["meta"]);
+}
+
+#[tokio::test]
+async fn http_mcp_unknown_tool_remains_jsonrpc_error() {
+    let response = mcp_call_json("not_a_tool", json!({})).await;
+
+    assert_eq!(response["error"]["code"], Value::from(-32602));
+    assert!(response["result"].is_null());
+    assert!(response["structuredContent"].is_null());
 }
 
 #[tokio::test]

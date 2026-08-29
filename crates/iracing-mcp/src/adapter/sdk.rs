@@ -251,19 +251,6 @@ fn snapshot_meta_from_snapshot(snapshot: &TelemetrySnapshot) -> SnapshotMeta {
     }
 }
 
-fn empty_snapshot_meta() -> SnapshotMeta {
-    SnapshotMeta {
-        session_tick: None,
-        session_time: None,
-        captured_at_unix_ms: None,
-        age_ms: None,
-        stale: None,
-        session_key: None,
-        session_revision: None,
-        server_elapsed_ms: 0,
-    }
-}
-
 #[cfg(windows)]
 fn read_from_snapshot<T, F>(read: F) -> Result<Read<T>, AdapterError>
 where
@@ -351,7 +338,7 @@ impl IracingAdapter for SdkAdapter {
                 session_name: "Disconnected".to_string(),
                 track_name: "Disconnected".to_string(),
             },
-            meta: empty_snapshot_meta(),
+            meta: SnapshotMeta::unavailable(),
         }
     }
 
@@ -440,7 +427,7 @@ impl IracingAdapter for SdkAdapter {
     }
 
     async fn snapshot_meta(&self) -> SnapshotMeta {
-        empty_snapshot_meta()
+        SnapshotMeta::unavailable()
     }
 }
 
@@ -815,7 +802,7 @@ impl IracingAdapter for SdkAdapter {
     async fn snapshot_meta(&self) -> SnapshotMeta {
         match snapshot_for_read() {
             Ok(snapshot) => snapshot_meta_from_snapshot(&snapshot),
-            Err(_) => empty_snapshot_meta(),
+            Err(_) => SnapshotMeta::unavailable(),
         }
     }
 }
@@ -840,7 +827,7 @@ impl SdkAdapter {
                         session_name: "Disconnected".to_string(),
                         track_name: "Disconnected".to_string(),
                     },
-                    meta: empty_snapshot_meta(),
+                    meta: SnapshotMeta::unavailable(),
                 };
             }
         };

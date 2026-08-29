@@ -21,7 +21,7 @@ fn build_app() -> axum::Router {
     build_router(handler)
 }
 
-async fn mcp_call(name: &str, arguments: Value) -> Value {
+async fn mcp_call_json(name: &str, arguments: Value) -> Value {
     let app = build_app();
     let body = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -41,6 +41,11 @@ async fn mcp_call(name: &str, arguments: Value) -> Value {
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
+    json
+}
+
+async fn mcp_call(name: &str, arguments: Value) -> Value {
+    let json = mcp_call_json(name, arguments).await;
     assert_eq!(
         json["result"]["content"][0]["type"],
         Value::String("text".into())
@@ -178,9 +183,18 @@ async fn http_mcp_meta_is_present_on_read_command_and_error() {
     let command = mcp_call("set_weather", json!({ "raining": 0.3 })).await;
     assert_full_unavailable_meta(&command["meta"]);
 
-    let error = mcp_call("not_a_tool", json!({})).await;
+    let error = mcp_call("replay_seek_session_time", json!({})).await;
     assert_eq!(error["ok"], Value::Bool(false));
     assert_full_unavailable_meta(&error["meta"]);
+}
+
+#[tokio::test]
+async fn http_mcp_unknown_tool_remains_jsonrpc_error() {
+    let response = mcp_call_json("not_a_tool", json!({})).await;
+
+    assert_eq!(response["error"]["code"], Value::from(-32602));
+    assert!(response["result"].is_null());
+    assert!(response["structuredContent"].is_null());
 }
 
 #[tokio::test]

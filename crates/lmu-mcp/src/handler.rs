@@ -6,6 +6,7 @@
 //! promoted out of `iracing-mcp` for #8).
 
 use async_trait::async_trait;
+use mcp_core::metadata::finalize_tool_result;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
 use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, SnapshotMeta, ToolCapability};
 use serde::{Deserialize, Serialize};
@@ -348,7 +349,7 @@ impl LmuMcpHandler {
                 }
             }
             "get_capabilities" => tool_ok(id, capabilities()),
-            _ => tool_err(id, "invalid_arguments", "unknown tool name"),
+            _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
         };
         self.finalize_tool_result(response, started).await
     }
@@ -361,28 +362,15 @@ impl LmuMcpHandler {
         let Some(result) = response.result.as_mut() else {
             return response;
         };
-        let Some(payload) = result
-            .get_mut("structuredContent")
-            .and_then(Value::as_object_mut)
-        else {
+        let Some(payload) = result.get("structuredContent").and_then(Value::as_object) else {
             return response;
         };
-        let mut meta = payload
-            .get("meta")
-            .cloned()
-            .and_then(|value| serde_json::from_value::<SnapshotMeta>(value).ok())
-            .unwrap_or_else(SnapshotMeta::unavailable);
-        if payload.get("meta").is_none() {
-            meta = self.adapter.snapshot_meta().await;
-        }
-        meta.server_elapsed_ms = started.elapsed().as_millis() as u64;
-        payload.insert("meta".to_string(), json!(meta));
-        let payload_text = serde_json::to_string(payload).unwrap_or_default();
-        if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
-            if let Some(item) = content.iter_mut().find(|item| item.get("text").is_some()) {
-                item["text"] = Value::String(payload_text);
-            }
-        }
+        let fallback = if payload.get("meta").is_some_and(Value::is_object) {
+            SnapshotMeta::unavailable()
+        } else {
+            self.adapter.snapshot_meta().await
+        };
+        finalize_tool_result(result, fallback, started.elapsed().as_millis() as u64);
         response
     }
 
