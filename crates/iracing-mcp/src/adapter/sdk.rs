@@ -12,6 +12,8 @@ use iracing::telemetry::Value;
 #[cfg(any(windows, test))]
 use serde_yaml::Value as YamlValue;
 #[cfg(any(windows, test))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(windows, test))]
 use std::sync::Arc;
 #[cfg(windows)]
 use std::sync::Mutex;
@@ -222,6 +224,8 @@ const SAMPLER_RESTART_DELAY: Duration = Duration::from_millis(250);
 static SNAPSHOT_SLOT: OnceLock<Mutex<Option<Arc<TelemetrySnapshot>>>> = OnceLock::new();
 #[cfg(windows)]
 static SAMPLER_STARTED: OnceLock<()> = OnceLock::new();
+#[cfg(windows)]
+static FIRST_SNAPSHOT_WAIT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Default)]
 pub struct SdkAdapter;
@@ -242,12 +246,17 @@ fn replay_state_from_snapshot(snapshot: &TelemetrySnapshot) -> Result<ReplayStat
 fn snapshot_for_read() -> Result<Arc<TelemetrySnapshot>, AdapterError> {
     start_sampler();
     let slot = SNAPSHOT_SLOT.get_or_init(|| Mutex::new(None));
-    wait_for_initial_snapshot(FIRST_SNAPSHOT_WAIT, FIRST_SNAPSHOT_POLL, || {
-        Ok(slot
-            .lock()
-            .map_err(|_| AdapterError::NotConnected("snapshot lock poisoned".to_string()))?
-            .clone())
-    })
+    snapshot_after_initial_wait(
+        &FIRST_SNAPSHOT_WAIT_ATTEMPTED,
+        FIRST_SNAPSHOT_WAIT,
+        FIRST_SNAPSHOT_POLL,
+        || {
+            Ok(slot
+                .lock()
+                .map_err(|_| AdapterError::NotConnected("snapshot lock poisoned".to_string()))?
+                .clone())
+        },
+    )
 }
 
 #[cfg(any(windows, test))]
@@ -271,6 +280,22 @@ where
         }
         thread::sleep(poll);
     }
+}
+
+#[cfg(any(windows, test))]
+fn snapshot_after_initial_wait<T, F>(
+    wait_attempted: &AtomicBool,
+    timeout: Duration,
+    poll: Duration,
+    mut load: F,
+) -> Result<T, AdapterError>
+where
+    F: FnMut() -> Result<Option<T>, AdapterError>,
+{
+    if !wait_attempted.swap(true, Ordering::Relaxed) {
+        return wait_for_initial_snapshot(timeout, poll, load);
+    }
+    load()?.ok_or_else(|| AdapterError::NotConnected("iRacing SDK is not connected".to_string()))
 }
 
 /// The iRacing SDK's shared-memory telemetry map and broadcast-message API
@@ -611,6 +636,32 @@ DriverInfo:
             })
             .expect_err("missing first publication should time out");
         assert!(matches!(error, AdapterError::NotConnected(_)));
+    }
+
+    #[test]
+    fn first_publication_wait_is_attempted_only_once() {
+        let wait_attempted = AtomicBool::new(false);
+        let mut loads = 0;
+        let error =
+            snapshot_after_initial_wait(&wait_attempted, Duration::ZERO, Duration::ZERO, || {
+                loads += 1;
+                Ok::<Option<()>, AdapterError>(None)
+            })
+            .expect_err("the initial empty slot should report not connected");
+        assert!(matches!(error, AdapterError::NotConnected(_)));
+
+        let value = snapshot_after_initial_wait(
+            &wait_attempted,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            || {
+                loads += 1;
+                Ok(Some("published"))
+            },
+        )
+        .expect("later reads should return immediately");
+        assert_eq!(value, "published");
+        assert_eq!(loads, 2);
     }
 }
 
