@@ -423,7 +423,7 @@ impl IracingMcpHandler {
                 tool_ok(id, overview)
             }
             "replay_get_state" => match self.adapter.get_replay_state().await {
-                Ok(replay_state) => tool_ok(id, replay_state),
+                Ok(replay_state) => tool_ok(id, replay_state.tool_data()),
                 Err(error) => tool_err(id, error_code(&error), &error.to_string()),
             },
             "replay_set_playback" => self.replay_set_playback(id, params).await,

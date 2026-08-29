@@ -55,14 +55,14 @@ These have no side effects and never require being out of the car.
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `get_session_overview` | *(none)* | Connectivity + mode: `connected`, `isReplay`, `isInCar`, `sessionName`, `trackName`. Never errors — reports `connected: false` instead. |
+| `get_session_overview` | *(none)* | Connectivity + mode: `connected`, `isReplay`, `isInCar`, `sessionName`, `trackName`. `isReplay` means the playhead is not at the live edge (or playback is paused/slow-motion) — `IsReplayPlaying` is `true` in a normal live session too, so it is not evidence of replay on its own. Never errors — reports `connected: false` instead. |
 | `get_weekend_info` | *(none)* | Static event/track/weather metadata for the current weekend (track, series/season/session IDs, weather). |
 | `get_roster` | `includeSpectators?`, `includePaceCar?` (bool) | Drivers/cars/classes currently in the session. |
 | `get_camera_groups` | *(none)* | All camera groups and their cameras for the current session (for building a camera picker). |
 | `get_standings` | `sessionNum?` (int) | Current standings/timing per driver for a session (defaults to the live session if omitted). |
 | `get_relatives` | *(none)* | Live field-order/gap view computed from telemetry arrays — who's near whom on track right now. |
 | `resolve_driver` | `query` (string, required), `limit?` (int) | Maps a spoken/typed name, initials, or car number to a ranked list of `carIdx` candidates with confidence + match reason. |
-| `replay_get_state` | *(none)* | Live replay + camera telemetry (frame, session time, playback speed, current camera/group/car) — the same snapshot the verification loop below polls internally; also useful standalone for UI. |
+| `replay_get_state` | *(none)* | Live replay + camera telemetry (frame, session time, playback speed, current camera/group/car) — the same snapshot the verification loop below polls internally; also useful standalone for UI. Also reports `framesBehindLive` (iRacing's `ReplayFrameNumEnd`: frames between the playhead and the live edge — constant during 1× playback of a live session, because the tape grows as fast as playback advances) and the derived `atLiveEdge`. |
 | `get_capabilities` | *(none)* | Returns `{ name, status, reason? }` for every tool in this list — `status` is always `supported` here since this is the mature reference implementation, but the same tool exists on `lmu-mcp` where support varies by tool. Lets an agent check support once instead of learning gaps from runtime errors. |
 
 ### Camera tools

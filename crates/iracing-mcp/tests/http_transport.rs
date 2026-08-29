@@ -201,6 +201,14 @@ async fn http_mcp_replay_tools_work() {
         state_json["result"]["structuredContent"]["data"]["replayPlaySpeed"],
         Value::from(1)
     );
+    assert_eq!(
+        state_json["result"]["structuredContent"]["data"]["framesBehindLive"],
+        Value::from(67_890)
+    );
+    assert_eq!(
+        state_json["result"]["structuredContent"]["data"]["atLiveEdge"],
+        Value::Bool(false)
+    );
 
     let playback_req = json!({
         "jsonrpc": "2.0",

@@ -227,6 +227,38 @@ pub struct ReplayState {
     pub cam_camera_state: i32,
 }
 
+pub const REPLAY_LIVE_EDGE_TOLERANCE_FRAMES: i32 = 60;
+
+impl ReplayState {
+    pub fn frames_behind_live(&self) -> i32 {
+        self.replay_frame_num_end
+    }
+
+    pub fn at_live_edge(&self) -> bool {
+        self.frames_behind_live() <= REPLAY_LIVE_EDGE_TOLERANCE_FRAMES
+    }
+
+    pub fn is_replay(&self) -> bool {
+        !self.at_live_edge() || self.replay_play_speed == 0 || self.replay_play_slow_motion
+    }
+
+    pub fn tool_data(&self) -> serde_json::Value {
+        let mut data = serde_json::to_value(self).expect("ReplayState should serialize");
+        let object = data
+            .as_object_mut()
+            .expect("serialized ReplayState should be an object");
+        object.insert(
+            "atLiveEdge".to_string(),
+            serde_json::json!(self.at_live_edge()),
+        );
+        object.insert(
+            "framesBehindLive".to_string(),
+            serde_json::json!(self.frames_behind_live()),
+        );
+        data
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum AdapterError {
     #[error("iRacing SDK is not connected: {0}")]
@@ -289,4 +321,70 @@ pub trait IracingAdapter: Send + Sync {
         query: &str,
         limit: usize,
     ) -> Result<ResolveDriverResult, AdapterError>;
+}
+
+#[cfg(test)]
+mod replay_state_tests {
+    use super::{ReplayState, REPLAY_LIVE_EDGE_TOLERANCE_FRAMES};
+
+    fn state(frames_behind_live: i32, speed: i32, slow_motion: bool) -> ReplayState {
+        ReplayState {
+            connected: true,
+            is_on_track: false,
+            is_in_garage: false,
+            is_replay_playing: true,
+            replay_play_speed: speed,
+            replay_play_slow_motion: slow_motion,
+            replay_frame_num: 0,
+            replay_frame_num_end: frames_behind_live,
+            replay_session_num: 0,
+            replay_session_time: 0.0,
+            cam_car_idx: 0,
+            cam_group_number: 0,
+            cam_camera_number: 0,
+            cam_camera_state: 0,
+        }
+    }
+
+    #[test]
+    fn live_edge_evidence_is_not_replay() {
+        let state = state(1, 1, false);
+
+        assert!(!state.is_replay());
+        assert!(state.at_live_edge());
+        assert_eq!(state.frames_behind_live(), 1);
+    }
+
+    #[test]
+    fn scrubbed_evidence_is_replay() {
+        let state = state(35_848, 1, false);
+
+        assert!(state.is_replay());
+        assert!(!state.at_live_edge());
+    }
+
+    #[test]
+    fn paused_playback_is_replay_even_at_live_edge() {
+        assert!(state(1, 0, false).is_replay());
+    }
+
+    #[test]
+    fn slow_motion_is_replay_even_at_live_edge() {
+        assert!(state(1, 1, true).is_replay());
+    }
+
+    #[test]
+    fn tolerance_boundary_is_inclusive_for_live_edge() {
+        assert!(!state(REPLAY_LIVE_EDGE_TOLERANCE_FRAMES, 1, false).is_replay());
+        assert!(state(REPLAY_LIVE_EDGE_TOLERANCE_FRAMES + 1, 1, false).is_replay());
+    }
+
+    #[test]
+    fn tool_data_adds_live_edge_fields_without_removing_state() {
+        let data = state(35_848, 1, false).tool_data();
+
+        assert_eq!(data["framesBehindLive"], 35_848);
+        assert_eq!(data["atLiveEdge"], false);
+        assert_eq!(data["replayFrameNum"], 0);
+    }
 }
