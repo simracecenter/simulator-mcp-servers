@@ -1,6 +1,6 @@
 # 0005 — Snapshot-Backed Reads, Dedicated SDK Ownership, and Read Metadata
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-29
 - **Deciders:** Sim RaceCenter maintainers
 
@@ -58,12 +58,21 @@ re-parsed only when `sessionInfoUpdate` changes; it is otherwise carried forward
 *Rejected:* a fixed poll interval (either lags the sim or burns CPU, and picking the number is a
 broadcast-cadence decision masquerading as an SDK one).
 
-### 4. Freshness and identity travel in a `meta` sibling of `data`, not inside domain types
+### 4. Freshness and identity travel in a `meta` sibling of `data`, on every result
 
 The tool envelope becomes `{ok, data, meta, warnings, error}`, where `meta` carries
 `sessionTick`, `sessionTime`, `capturedAtUnixMs`, `ageMs`, `stale`, `sessionKey`, `sessionRevision`
 and `serverElapsedMs`. Every read gets the same block for free, and `SessionOverview`, `Roster`,
 `Standings`, `Relatives` and `CameraGroupList` keep their current shapes.
+
+`meta` is present on **every** tool result, commands and errors included, not only reads. Commands
+already carry their own `elapsedMs`, but that measures how long the *simulator* took to reach the
+expected state — a different quantity from `serverElapsedMs`, and no substitute for knowing which
+session and which tick a command was evaluated against. One block on every result also means a
+client parses `meta` in exactly one place.
+
+*Rejected:* `meta` on reads only (clients would branch on tool family to find freshness, which is the
+per-family contract drift this ADR and the envelope work are removing).
 
 *Rejected:* adding freshness fields to each domain struct (five near-duplicate definitions, five
 migrations, and no answer for tools that return neither); a top-level sibling of `result` outside
@@ -86,13 +95,18 @@ tells a client nothing about *what* changed).
 ### 6. Disconnection degrades reads instead of failing them
 
 When the sim goes away the sampler stops publishing; the last snapshot remains readable with
-`connected: false` and a growing `ageMs`, and `stale: true` once age exceeds the staleness
-threshold. Reads succeed with stale-marked data so a director can keep making decisions; commands
+`connected: false` and a growing `ageMs`, and `stale: true` once `ageMs` exceeds **250 ms** — a fixed
+constant, not a config knob. 250 ms is roughly fifteen sim ticks: past that, a snapshot no longer
+describes the instant a camera decision is being made, and every client wants the same answer to
+"is this current?". Clients needing a different tolerance have `ageMs` and can apply their own.
+Reads succeed with stale-marked data so a director can keep making decisions; commands
 continue to fail with `NotConnected`, because accepting a command we cannot deliver is a lie. On
 reconnect the sampler rebuilds the connection and bumps `sessionRevision`.
 
 *Rejected:* erroring every read while disconnected (turns a brief sim hiccup into a broadcast
-outage, and the client cannot distinguish "gone" from "gone for 40 ms").
+outage, and the client cannot distinguish "gone" from "gone for 40 ms"); a configurable threshold
+(one rig, one agent — a setting here only creates two deployments that disagree about what fresh
+means).
 
 ### 7. The metadata types live in `mcp-core`; the sampler is iRacing-only for now
 

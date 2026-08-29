@@ -10,7 +10,7 @@ or agent) can see *why* the code is shaped the way it is without re-deriving it 
 | [0002](0002-lmu-adapter-design.md) | LMU Telemetry Access Model & `LmuAdapter` Design | Accepted |
 | [0003](0003-single-active-simulator-constraint.md) | Single Active Simulator Constraint — No Multi-Instance Support | Accepted |
 | [0004](0004-mcp-streamable-http-transport.md) | MCP Streamable HTTP Transport (Hand-Rolled, Session-Scoped) | Accepted |
-| [0005](0005-snapshot-backed-reads.md) | Snapshot-Backed Reads, Dedicated SDK Ownership, and Read Metadata | Proposed |
+| [0005](0005-snapshot-backed-reads.md) | Snapshot-Backed Reads, Dedicated SDK Ownership, and Read Metadata | Accepted |
 
 ## Adding a new ADR
 
