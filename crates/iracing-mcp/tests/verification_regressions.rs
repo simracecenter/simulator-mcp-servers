@@ -82,6 +82,12 @@ impl adapter::IracingAdapter for ScriptedAdapter {
                 is_in_car: current.is_on_track || current.is_in_garage,
                 session_name: "Scripted".to_string(),
                 track_name: "Scripted Track".to_string(),
+                session_num: None,
+                session_type: None,
+                session_state: None,
+                session_flags: None,
+                session_time_remain_sec: None,
+                session_laps_remain: None,
             },
             &current,
         )

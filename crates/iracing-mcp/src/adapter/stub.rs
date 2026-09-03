@@ -81,6 +81,12 @@ impl IracingAdapter for StubAdapter {
                 is_in_car: rs.is_on_track || rs.is_in_garage,
                 session_name: "Practice".to_string(),
                 track_name: "Stub Track".to_string(),
+                session_num: Some(0),
+                session_type: Some("Practice".to_string()),
+                session_state: Some("Racing".to_string()),
+                session_flags: Some(0),
+                session_time_remain_sec: Some(3_600.0),
+                session_laps_remain: Some(i32::MAX),
             },
             &rs,
         )

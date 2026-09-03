@@ -55,7 +55,7 @@ These have no side effects and never require being out of the car.
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `get_session_overview` | *(none)* | Connectivity + mode: `connected`, `isReplay`, `isInCar`, `sessionName`, `trackName`. `isReplay` means the playhead is not at the live edge (or playback is paused/slow-motion) — `IsReplayPlaying` is `true` in a normal live session too, so it is not evidence of replay on its own. Never errors — reports `connected: false` instead. |
+| `get_session_overview` | *(none)* | Connectivity + mode: `connected`, `isReplay`, `isInCar`, `sessionName`, `trackName`, plus session identity/phase: `sessionNum`, `sessionType` (same `SessionType` string as `sessionName` and `get_standings.sessionType` — `Practice`, `Lone Qualify`, `Open Qualify`, `Race`, …), `sessionState` (`Invalid`, `GetInCar`, `Warmup`, `ParadeLaps`, `Racing`, `Checkered`, `CoolDown`, or `null` for an unknown value), `sessionFlags` (raw irsdk bitfield), `sessionTimeRemainSec`, `sessionLapsRemain`. The phase fields are `null` when the sim is disconnected or the telemetry var is absent (ADR 0006). `isReplay` means the playhead is not at the live edge (or playback is paused/slow-motion) — `IsReplayPlaying` is `true` in a normal live session too, so it is not evidence of replay on its own. Never errors — reports `connected: false` instead. |
 | `get_weekend_info` | *(none)* | Static event/track/weather metadata for the current weekend (track, series/season/session IDs, weather). |
 | `get_roster` | `includeSpectators?`, `includePaceCar?` (bool) | Drivers/cars/classes currently in the session. |
 | `get_camera_groups` | *(none)* | All camera groups and their cameras for the current session (for building a camera picker). |

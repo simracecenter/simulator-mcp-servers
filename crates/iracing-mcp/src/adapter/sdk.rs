@@ -53,7 +53,10 @@ use super::{
 };
 
 #[cfg(any(windows, test))]
-use super::{CameraEntry, CameraGroup, DriverMatch, RelativeEntry, RosterEntry, SessionPosition};
+use super::{
+    session_state_name, CameraEntry, CameraGroup, DriverMatch, RelativeEntry, RosterEntry,
+    SessionPosition,
+};
 
 #[cfg(windows)]
 const IRSDK_MEMMAPFILENAME: &str = "Local\\IRSDKMemMapFileName";
@@ -187,6 +190,10 @@ pub(crate) struct TelemetrySnapshot {
     pub(crate) estimated_times: Vec<f32>,
     pub(crate) f2_times: Vec<f32>,
     pub(crate) track_surfaces: Option<Vec<i32>>,
+    pub(crate) session_state: Option<i32>,
+    pub(crate) session_flags: Option<u32>,
+    pub(crate) session_time_remain: Option<f64>,
+    pub(crate) session_laps_remain: Option<i32>,
 }
 
 #[cfg(any(windows, test))]
@@ -234,6 +241,56 @@ fn replay_state_from_snapshot(snapshot: &TelemetrySnapshot) -> Result<ReplayStat
     let mut state = snapshot.replay_state.clone();
     state.connected = snapshot.connected;
     Ok(state)
+}
+
+#[cfg(any(windows, test))]
+fn session_overview_from_snapshot(snapshot: &TelemetrySnapshot) -> SessionOverview {
+    // This read never fails — a disconnected sim is a valid overview, not an
+    // error — but the underlying parses can fail for reasons worth knowing
+    // (unparseable session YAML). Log those at `warn` before collapsing them
+    // into `None` so they aren't indistinguishable from "sim not running".
+    let session_data = match session_data_from_snapshot(snapshot) {
+        Ok(data) => Some(data),
+        Err(error) => {
+            tracing::warn!(%error, "get_session_overview: session data unavailable");
+            None
+        }
+    };
+    let replay_state = match replay_state_from_snapshot(snapshot) {
+        Ok(state) => Some(state),
+        Err(error) => {
+            tracing::warn!(%error, "get_session_overview: replay state unavailable");
+            None
+        }
+    };
+    let session_type = session_data
+        .as_ref()
+        .map(|session| session.current_session_type.clone());
+
+    SessionOverview {
+        connected: snapshot.connected,
+        is_replay: replay_state
+            .as_ref()
+            .map(ReplayState::is_replay)
+            .unwrap_or(false),
+        is_in_car: replay_state
+            .as_ref()
+            .map(|state| state.is_on_track || state.is_in_garage)
+            .unwrap_or(false),
+        session_name: session_type
+            .clone()
+            .unwrap_or_else(|| "Disconnected".to_string()),
+        track_name: session_data
+            .as_ref()
+            .map(|session| session.track_display_name.clone())
+            .unwrap_or_else(|| "Disconnected".to_string()),
+        session_num: Some(snapshot.session_num),
+        session_type,
+        session_state: snapshot.session_state.and_then(session_state_name),
+        session_flags: snapshot.session_flags,
+        session_time_remain_sec: snapshot.session_time_remain,
+        session_laps_remain: snapshot.session_laps_remain,
+    }
 }
 
 #[cfg(any(windows, test))]
@@ -331,13 +388,7 @@ where
 impl IracingAdapter for SdkAdapter {
     async fn get_session_overview(&self) -> Read<SessionOverview> {
         Read {
-            data: SessionOverview {
-                connected: false,
-                is_replay: false,
-                is_in_car: false,
-                session_name: "Disconnected".to_string(),
-                track_name: "Disconnected".to_string(),
-            },
+            data: SessionOverview::disconnected(),
             meta: SnapshotMeta::unavailable(),
         }
     }
@@ -580,7 +631,50 @@ DriverInfo:
             estimated_times: vec![0.0; 8],
             f2_times: vec![0.0; 8],
             track_surfaces: Some(vec![0; 8]),
+            session_state: Some(4),
+            session_flags: Some(0x0000_0001),
+            session_time_remain: Some(1_234.5),
+            session_laps_remain: Some(12),
         }
+    }
+
+    #[test]
+    fn overview_carries_session_identity_and_phase_from_snapshot() {
+        let value = snapshot();
+        let overview = session_overview_from_snapshot(&value);
+
+        assert!(overview.connected);
+        assert_eq!(overview.session_name, "Race");
+        assert_eq!(overview.session_type.as_deref(), Some("Race"));
+        assert_eq!(overview.session_num, Some(2));
+        assert_eq!(overview.session_state.as_deref(), Some("Racing"));
+        assert_eq!(overview.session_flags, Some(1));
+        assert_eq!(overview.session_time_remain_sec, Some(1_234.5));
+        assert_eq!(overview.session_laps_remain, Some(12));
+        assert!(overview.is_in_car);
+    }
+
+    #[test]
+    fn overview_phase_fields_are_null_when_telemetry_is_absent() {
+        let mut value = snapshot();
+        value.session_state = None;
+        value.session_flags = None;
+        value.session_time_remain = None;
+        value.session_laps_remain = None;
+        let overview = session_overview_from_snapshot(&value);
+
+        assert_eq!(overview.session_state, None);
+        assert_eq!(overview.session_flags, None);
+        assert_eq!(overview.session_time_remain_sec, None);
+        assert_eq!(overview.session_laps_remain, None);
+        assert_eq!(overview.session_num, Some(2));
+    }
+
+    #[test]
+    fn overview_unknown_session_state_is_null() {
+        let mut value = snapshot();
+        value.session_state = Some(42);
+        assert_eq!(session_overview_from_snapshot(&value).session_state, None);
     }
 
     #[test]
@@ -810,62 +904,19 @@ impl IracingAdapter for SdkAdapter {
 #[cfg(windows)]
 impl SdkAdapter {
     fn get_session_overview_sync(&self) -> Read<SessionOverview> {
-        // This tool never fails — a disconnected sim is a valid overview, not
-        // an error — but the underlying reads can fail for reasons worth
-        // knowing (unparseable session YAML, a missing telemetry var). Log
-        // those at `warn` before collapsing them into `None` so they aren't
-        // silently swallowed and left indistinguishable from "sim not running".
         let snapshot = match snapshot_for_read() {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 warn!(%error, "get_session_overview: snapshot unavailable");
                 return Read {
-                    data: SessionOverview {
-                        connected: false,
-                        is_replay: false,
-                        is_in_car: false,
-                        session_name: "Disconnected".to_string(),
-                        track_name: "Disconnected".to_string(),
-                    },
+                    data: SessionOverview::disconnected(),
                     meta: SnapshotMeta::unavailable(),
                 };
             }
         };
-        let session_data = match session_data_from_snapshot(&snapshot) {
-            Ok(data) => Some(data),
-            Err(error) => {
-                warn!(%error, "get_session_overview: session data unavailable");
-                None
-            }
-        };
-        let replay_state = match replay_state_from_snapshot(&snapshot) {
-            Ok(state) => Some(state),
-            Err(error) => {
-                warn!(%error, "get_session_overview: replay state unavailable");
-                None
-            }
-        };
 
         Read {
-            data: SessionOverview {
-                connected: snapshot.connected,
-                is_replay: replay_state
-                    .as_ref()
-                    .map(ReplayState::is_replay)
-                    .unwrap_or(false),
-                is_in_car: replay_state
-                    .as_ref()
-                    .map(|state| state.is_on_track || state.is_in_garage)
-                    .unwrap_or(false),
-                session_name: session_data
-                    .as_ref()
-                    .map(|session| session.current_session_type.clone())
-                    .unwrap_or_else(|| "Disconnected".to_string()),
-                track_name: session_data
-                    .as_ref()
-                    .map(|session| session.track_display_name.clone())
-                    .unwrap_or_else(|| "Disconnected".to_string()),
-            },
+            data: session_overview_from_snapshot(&snapshot),
             meta: snapshot_meta_from_snapshot(&snapshot),
         }
     }
@@ -1583,6 +1634,45 @@ fn read_f64(sample: &iracing::telemetry::Sample, name: &'static str) -> Result<f
 }
 
 #[cfg(windows)]
+fn read_optional_i32(
+    sample: &iracing::telemetry::Sample,
+    name: &'static str,
+) -> Result<Option<i32>, AdapterError> {
+    match sample.get(name) {
+        Err(_) => Ok(None),
+        Ok(Value::INT(value)) => Ok(Some(value)),
+        Ok(Value::BITS(value)) => Ok(Some(value as i32)),
+        Ok(_) => Err(AdapterError::InvalidTelemetryType(name)),
+    }
+}
+
+#[cfg(windows)]
+fn read_optional_bits(
+    sample: &iracing::telemetry::Sample,
+    name: &'static str,
+) -> Result<Option<u32>, AdapterError> {
+    match sample.get(name) {
+        Err(_) => Ok(None),
+        Ok(Value::BITS(value)) => Ok(Some(value)),
+        Ok(Value::INT(value)) => Ok(Some(value as u32)),
+        Ok(_) => Err(AdapterError::InvalidTelemetryType(name)),
+    }
+}
+
+#[cfg(windows)]
+fn read_optional_f64(
+    sample: &iracing::telemetry::Sample,
+    name: &'static str,
+) -> Result<Option<f64>, AdapterError> {
+    match sample.get(name) {
+        Err(_) => Ok(None),
+        Ok(Value::DOUBLE(value)) => Ok(Some(value)),
+        Ok(Value::FLOAT(value)) => Ok(Some(value as f64)),
+        Ok(_) => Err(AdapterError::InvalidTelemetryType(name)),
+    }
+}
+
+#[cfg(windows)]
 fn read_i32_vec(
     sample: &iracing::telemetry::Sample,
     name: &'static str,
@@ -2157,6 +2247,10 @@ fn build_snapshot(
         estimated_times: read_f32_vec(sample, "CarIdxEstTime")?,
         f2_times: read_f32_vec(sample, "CarIdxF2Time")?,
         track_surfaces: read_optional_i32_vec(sample, "CarIdxTrackSurface")?,
+        session_state: read_optional_i32(sample, "SessionState")?,
+        session_flags: read_optional_bits(sample, "SessionFlags")?,
+        session_time_remain: read_optional_f64(sample, "SessionTimeRemain")?,
+        session_laps_remain: read_optional_i32(sample, "SessionLapsRemain")?,
     })
 }
 

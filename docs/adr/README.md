@@ -11,6 +11,7 @@ or agent) can see *why* the code is shaped the way it is without re-deriving it 
 | [0003](0003-single-active-simulator-constraint.md) | Single Active Simulator Constraint — No Multi-Instance Support | Accepted |
 | [0004](0004-mcp-streamable-http-transport.md) | MCP Streamable HTTP Transport (Hand-Rolled, Session-Scoped) | Accepted |
 | [0005](0005-snapshot-backed-reads.md) | Snapshot-Backed Reads, Dedicated SDK Ownership, and Read Metadata | Accepted |
+| [0006](0006-session-phase-in-overview.md) | Session Identity and Phase on `get_session_overview` | Accepted |
 
 ## Adding a new ADR
 
