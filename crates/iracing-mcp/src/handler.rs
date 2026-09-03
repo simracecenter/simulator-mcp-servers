@@ -185,7 +185,7 @@ fn tool_descriptors() -> Vec<Value> {
     vec![
         json!({
             "name": "get_session_overview",
-            "description": "Returns current iRacing session connectivity and mode.",
+            "description": "Returns current iRacing session connectivity, mode, session type (sessionType) and phase (sessionState, sessionFlags, sessionTimeRemainSec, sessionLapsRemain).",
             "inputSchema": {
                 "type": "object",
                 "properties": {},

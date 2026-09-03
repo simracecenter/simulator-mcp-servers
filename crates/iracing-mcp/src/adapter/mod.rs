@@ -25,6 +25,45 @@ pub struct SessionOverview {
     pub is_in_car: bool,
     pub session_name: String,
     pub track_name: String,
+    pub session_num: Option<i32>,
+    pub session_type: Option<String>,
+    pub session_state: Option<String>,
+    pub session_flags: Option<u32>,
+    pub session_time_remain_sec: Option<f64>,
+    pub session_laps_remain: Option<i32>,
+}
+
+impl SessionOverview {
+    pub fn disconnected() -> Self {
+        Self {
+            connected: false,
+            is_replay: false,
+            is_in_car: false,
+            session_name: "Disconnected".to_string(),
+            track_name: "Disconnected".to_string(),
+            session_num: None,
+            session_type: None,
+            session_state: None,
+            session_flags: None,
+            session_time_remain_sec: None,
+            session_laps_remain: None,
+        }
+    }
+}
+
+/// Maps the irsdk `SessionState` enum to its name; unknown values map to `None`.
+pub fn session_state_name(raw_value: i32) -> Option<String> {
+    let name = match raw_value {
+        0 => "Invalid",
+        1 => "GetInCar",
+        2 => "Warmup",
+        3 => "ParadeLaps",
+        4 => "Racing",
+        5 => "Checkered",
+        6 => "CoolDown",
+        _ => return None,
+    };
+    Some(name.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +365,33 @@ pub trait IracingAdapter: Send + Sync {
         query: &str,
         limit: usize,
     ) -> Result<Read<ResolveDriverResult>, AdapterError>;
+}
+
+#[cfg(test)]
+mod session_state_tests {
+    use super::session_state_name;
+
+    #[test]
+    fn maps_all_known_session_states() {
+        let expected = [
+            "Invalid",
+            "GetInCar",
+            "Warmup",
+            "ParadeLaps",
+            "Racing",
+            "Checkered",
+            "CoolDown",
+        ];
+        for (raw, name) in expected.iter().enumerate() {
+            assert_eq!(session_state_name(raw as i32).as_deref(), Some(*name));
+        }
+    }
+
+    #[test]
+    fn unknown_session_state_is_unavailable() {
+        assert_eq!(session_state_name(-1), None);
+        assert_eq!(session_state_name(7), None);
+    }
 }
 
 #[cfg(test)]
