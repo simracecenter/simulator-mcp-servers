@@ -24,6 +24,23 @@ const SESSION_HEADER: &str = "mcp-session-id";
 /// Keeps idle SSE streams alive through proxies and client read timeouts.
 const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 
+#[cfg(test)]
+#[path = "http_auth_tests.rs"]
+mod auth_tests;
+
+#[path = "http_access.rs"]
+pub mod access;
+
+pub fn build_protected_router<H: McpHandler>(
+    handler: Arc<H>,
+    credentials: Arc<access::CredentialRegistry>,
+) -> Router {
+    build_router(handler).layer(axum::middleware::from_fn_with_state(
+        Arc::new(access::AccessState::new(credentials)),
+        access::authorize,
+    ))
+}
+
 struct AppState<H> {
     handler: Arc<H>,
     sessions: Arc<SessionRegistry>,
