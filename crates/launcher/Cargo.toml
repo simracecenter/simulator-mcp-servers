@@ -37,6 +37,9 @@ native-windows-gui = "1.0"
 native-windows-derive = "1.0"
 winapi = { version = "0.3", features = ["synchapi", "handleapi", "errhandlingapi", "winerror", "winnt"] }
 
+[build-dependencies]
+embed-manifest = "1.5.0"
+
 [dev-dependencies]
 http-body-util = "0.1"
 tokio-stream = "0.1"
