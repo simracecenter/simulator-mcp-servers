@@ -337,10 +337,15 @@ mod tests {
     }
 
     #[test]
-    fn publisher_scope_is_limited_to_publisher_tools() {
-        assert_eq!(PUBLISHER_SCOPE.len(), 4);
-        assert!(PUBLISHER_SCOPE
+    fn publisher_scope_matches_advertised_publisher_tools() {
+        let mut scope: Vec<&str> = PUBLISHER_SCOPE.to_vec();
+        let mut advertised: Vec<&str> = publisher_mcp::MUTATING_TOOLS
             .iter()
-            .all(|tool| tool.starts_with("publisher_")));
+            .chain(publisher_mcp::READ_ONLY_TOOLS)
+            .copied()
+            .collect();
+        scope.sort_unstable();
+        advertised.sort_unstable();
+        assert_eq!(scope, advertised);
     }
 }

@@ -17,6 +17,7 @@ pub const PUBLISHER_SCOPE: &[&str] = &[
     "publisher_configure",
     "publisher_start",
     "publisher_stop",
+    "get_capabilities",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
