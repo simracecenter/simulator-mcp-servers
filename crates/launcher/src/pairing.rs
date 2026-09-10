@@ -169,19 +169,23 @@ impl PairingState {
     }
 
     pub fn pair(&self, request: PairRequest) -> Result<PairResponse, PairError> {
+        let now = Instant::now();
         {
             let mut strikes = self.strikes.lock().expect("pairing strikes");
             if let Some(until) = strikes.locked_until {
-                if until > Instant::now() {
+                if until > now {
                     return Err(PairError::RateLimited {
-                        retry_after_secs: until
-                            .saturating_duration_since(Instant::now())
-                            .as_secs()
-                            .max(1),
+                        retry_after_secs: until.saturating_duration_since(now).as_secs().max(1),
                     });
                 }
                 strikes.locked_until = None;
                 strikes.count = 0;
+            }
+            if strikes.count >= 5 {
+                strikes.locked_until = Some(now + Duration::from_secs(60));
+                return Err(PairError::RateLimited {
+                    retry_after_secs: 60,
+                });
             }
         }
 
@@ -192,12 +196,6 @@ impl PairingState {
         if request.pairing_code != self.pairing_code() {
             let mut strikes = self.strikes.lock().expect("pairing strikes");
             strikes.count = strikes.count.saturating_add(1);
-            if strikes.count >= 5 {
-                strikes.locked_until = Some(Instant::now() + Duration::from_secs(60));
-                return Err(PairError::RateLimited {
-                    retry_after_secs: 60,
-                });
-            }
             return Err(PairError::InvalidCode);
         }
 

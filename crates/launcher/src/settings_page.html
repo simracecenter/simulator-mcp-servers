@@ -108,6 +108,13 @@
     color: var(--text);
     word-break: break-all;
   }
+  .pairing-label {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
   #pairing-code {
     font: 700 1.8rem ui-monospace, SFMono-Regular, monospace;
     letter-spacing: .12em;
@@ -149,11 +156,13 @@
     <span class="status-value" data-testid="connection-status" id="connection-status">—</span>
   </div>
   <div class="pairing" id="rig-pairing">
-    <h2>Rig pairing</h2>
+    <h2>RIG PAIRING</h2>
+    <div class="pairing-label">Pairing code</div>
     <div class="pairing-value" id="pairing-code" data-testid="pairing-code">—</div>
+    <div class="pairing-label">Certificate fingerprint</div>
     <div class="pairing-value" id="cert-fingerprint" data-testid="cert-fingerprint">—</div>
     <div class="pairing-value" id="pairing-status" data-testid="pairing-status">Not paired</div>
-    <button id="unpair" data-testid="unpair" type="button">Unpair</button>
+    <button id="unpair" data-testid="unpair" type="button">UNPAIR</button>
   </div>
 </div>
 <script>
@@ -186,7 +195,7 @@ function setActive(sim, connected, toolNames) {
 function setPairing(data) {
   pairingCodeEl.textContent = data.pairingCode || '—';
   fingerprintEl.textContent = data.certFingerprint || '—';
-  pairingStatusEl.textContent = data.paired ? ('Paired: ' + (data.directorName || 'Director')) : 'Not paired';
+  pairingStatusEl.textContent = data.paired ? ('Paired with ' + (data.directorName || 'Director Console')) : 'Not paired';
 }
 
 async function loadStatus() {

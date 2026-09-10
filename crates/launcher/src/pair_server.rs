@@ -47,7 +47,7 @@ pub fn build_publisher_router(
 
 async fn pair(State(pairing): State<Arc<PairingState>>, request: Request<Body>) -> Response {
     if request.headers().contains_key(header::ORIGIN) {
-        return StatusCode::FORBIDDEN.into_response();
+        return error_response(StatusCode::FORBIDDEN, "origin_forbidden");
     }
     if request
         .headers()
@@ -213,6 +213,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            json!({"error": "origin_forbidden"})
+        );
     }
 
     #[tokio::test]
@@ -223,15 +228,13 @@ mod tests {
         } else {
             "000000"
         };
-        for attempt in 0..5 {
+        for _ in 0..5 {
             let response = app.clone().oneshot(pair_request(wrong)).await.unwrap();
-            if attempt < 4 {
-                assert_eq!(response.status(), StatusCode::FORBIDDEN);
-            } else {
-                assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-                assert_eq!(response.headers()[header::RETRY_AFTER], "60");
-            }
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
+        let response = app.clone().oneshot(pair_request(wrong)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "60");
         let response = app
             .oneshot(pair_request(&pairing.pairing_code()))
             .await

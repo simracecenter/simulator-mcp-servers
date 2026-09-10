@@ -71,25 +71,6 @@ pub fn build_handler(sim: Sim) -> Arc<dyn McpHandler> {
     }
 }
 
-/// Run the configured MCP transport with `handler` until it exits.
-///
-/// This is separate from [`build_handler`] so the launcher can construct a
-/// single [`SwappableHandler`], hand it to the transport, and swap its inner
-/// handler later without restarting the listener.
-#[allow(dead_code)]
-pub async fn run_transport(
-    handler: Arc<SwappableHandler>,
-    transport: TransportKind,
-    bind: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match transport {
-        TransportKind::Stdio => mcp_core::transport::stdio::run_stdio(handler).await?,
-        TransportKind::Http => mcp_core::transport::http::run_http(bind, handler).await?,
-    }
-
-    Ok(())
-}
-
 pub struct TransportSupervisor {
     transport: TransportKind,
     bind: String,
@@ -118,7 +99,12 @@ impl TransportSupervisor {
     }
 
     pub fn start(&self, role: Sim) {
-        if let Some(task) = self.task.lock().expect("transport task").take() {
+        let mut task_slot = self.task.lock().expect("transport task");
+        if matches!(self.transport, TransportKind::Stdio) {
+            if task_slot.is_some() {
+                return;
+            }
+        } else if let Some(task) = task_slot.take() {
             task.abort();
         }
         let transport = self.transport;
@@ -155,23 +141,13 @@ impl TransportSupervisor {
                 error!(%error, "mcp server task exited");
             }
         });
-        *self.task.lock().expect("transport task") = Some(task);
+        *task_slot = Some(task);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn http_transport_propagates_bind_errors() {
-        let handler = Arc::new(SwappableHandler::new(build_handler(Sim::Iracing)));
-        let error = run_transport(handler, TransportKind::Http, "")
-            .await
-            .unwrap_err();
-
-        assert!(!error.to_string().is_empty());
-    }
 
     #[tokio::test]
     async fn publisher_handler_exposes_only_publisher_tools() {
