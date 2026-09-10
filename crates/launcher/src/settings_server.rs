@@ -9,8 +9,8 @@
 //! - `GET /api/status`    — active sim, connection status, and live tool names.
 //! - `POST /api/sim`      — persist selection and hot-swap the in-process handler.
 //!
-//! The server binds loopback by default and has no authentication, matching
-//! the MCP HTTP transport's trust model (SECURITY.md).
+//! The server binds loopback by default and has no authentication because it
+//! is intended for local Driver settings control.
 
 use std::sync::Arc;
 
@@ -29,19 +29,29 @@ use tokio::sync::RwLock;
 use mcp_core::{JsonRpcRequest, McpHandler};
 
 use crate::config::{self, Sim};
-use crate::runner::{build_handler, SwappableHandler};
+use crate::pairing::PairingState;
+use crate::runner::{build_handler, SwappableHandler, TransportSupervisor};
 
 /// Shared state for the settings server.
 pub struct SettingsState {
     pub current_sim: RwLock<Sim>,
     pub handler: Arc<SwappableHandler>,
+    pub pairing: Arc<PairingState>,
+    pub supervisor: Arc<TransportSupervisor>,
 }
 
 impl SettingsState {
-    pub fn new(handler: Arc<SwappableHandler>, sim: Sim) -> Arc<Self> {
+    pub fn new(
+        handler: Arc<SwappableHandler>,
+        sim: Sim,
+        pairing: Arc<PairingState>,
+        supervisor: Arc<TransportSupervisor>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             current_sim: RwLock::new(sim),
             handler,
+            pairing,
+            supervisor,
         })
     }
 }
@@ -57,6 +67,11 @@ struct Status {
     sim: String,
     connected: bool,
     tool_names: Vec<String>,
+    pairing_code: Option<String>,
+    paired: bool,
+    director_name: Option<String>,
+    cert_fingerprint: Option<String>,
+    device_id: Option<String>,
 }
 
 const INDEX_HTML: &str = include_str!("settings_page.html");
@@ -70,6 +85,7 @@ pub async fn run(bind: &str, state: Arc<SettingsState>) -> std::io::Result<()> {
         .route("/healthz", get(healthz))
         .route("/api/status", get(api_status))
         .route("/api/sim", post(api_sim))
+        .route("/api/unpair", post(api_unpair))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -95,7 +111,7 @@ async fn healthz() -> Json<Value> {
 
 async fn api_status(State(state): State<Arc<SettingsState>>) -> Json<Status> {
     let sim = *state.current_sim.read().await;
-    Json(build_status(&state.handler, sim).await)
+    Json(build_status(&state.handler, sim, &state.pairing).await)
 }
 
 async fn api_sim(
@@ -112,20 +128,57 @@ async fn api_sim(
             config::save(&config)
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
             state.handler.set(build_handler(new_sim));
+            state.supervisor.start(new_sim);
             *sim_lock = new_sim;
         }
     }
     let sim = *state.current_sim.read().await;
-    Ok(Json(build_status(&state.handler, sim).await))
+    Ok(Json(
+        build_status(&state.handler, sim, &state.pairing).await,
+    ))
 }
 
-async fn build_status(handler: &SwappableHandler, sim: Sim) -> Status {
+async fn api_unpair(
+    State(state): State<Arc<SettingsState>>,
+) -> Result<Json<Status>, (StatusCode, String)> {
+    state
+        .pairing
+        .unpair()
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let sim = *state.current_sim.read().await;
+    Ok(Json(
+        build_status(&state.handler, sim, &state.pairing).await,
+    ))
+}
+
+async fn build_status(handler: &SwappableHandler, sim: Sim, pairing: &PairingState) -> Status {
     let connected = get_connected(handler, sim).await;
     let tool_names = get_tool_names(handler).await;
+    let (pairing_code, paired, director_name, cert_fingerprint, device_id) =
+        if sim == Sim::Publisher {
+            let config = config::load().ok();
+            (
+                Some(pairing.pairing_code()),
+                pairing.is_paired(),
+                config
+                    .as_ref()
+                    .and_then(|config| config.pairing.as_ref())
+                    .map(|pairing| pairing.director_name.clone()),
+                Some(pairing.fingerprint().to_string()),
+                pairing.device_id().map(|id| id.to_string()),
+            )
+        } else {
+            (None, false, None, None, None)
+        };
     Status {
         sim: sim.to_string(),
         connected,
         tool_names,
+        pairing_code,
+        paired,
+        director_name,
+        cert_fingerprint,
+        device_id,
     }
 }
 

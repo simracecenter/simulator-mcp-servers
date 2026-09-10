@@ -2,7 +2,9 @@
 
 - Status: Proposed
 - Date: 2026-09-10
-- Engineering issue: https://github.com/simracecenter/simulator-mcp-servers/issues/57
+- Engineering issues:
+  - https://github.com/simracecenter/simulator-mcp-servers/issues/57
+  - https://github.com/simracecenter/simulator-mcp-servers/issues/59
 
 ## Context
 
@@ -32,15 +34,24 @@ The mutating tools `publisher_configure`, `publisher_start`, and
 `publisher_stop` are gated by ADR 0007's exact-name allowlists, exactly like
 camera tools.
 
-## Limits
+## Pairing and rig TLS
 
-This slice adds no TLS pairing, installer, autostart, heartbeat, or version
-protocol. Wheel controls are out of scope. The default listener is unchanged.
-The Director contract is defined by
+The Director pairing contract is defined by
 `simracecenter/director` PR #9,
 [`docs/12-rig-pairing.md`](https://github.com/simracecenter/director/blob/main/docs/12-rig-pairing.md).
-`POST /pair`, pairing-code validation, and credential minting are not
-implemented in this PR.
+The publisher listener serves HTTPS with a self-signed certificate persisted
+per Rig, and Director performs TOFU by pinning the certificate fingerprint
+supplied during pairing (see Director ADR 0014). `POST /pair` mints one
+persistent credential after validating the one-shot six-digit code. The
+five-strike lockout, single-pairing conflict response, publisher-only grant
+scope, digest-only credential persistence, and unpair revocation protect the
+exception to ADR 0007's rule that credential issuance is a Rust API rather
+than an unauthenticated network endpoint.
+
+## Limits
+
+Installer, autostart, and wheel controls remain out of scope. The default
+listener remains unchanged for simulator roles.
 
 ## References
 

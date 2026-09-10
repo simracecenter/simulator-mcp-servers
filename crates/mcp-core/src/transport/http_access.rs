@@ -35,13 +35,17 @@ impl IssuedCredential {
     pub fn token(&self) -> &str {
         &self.token
     }
+
+    pub fn digest(&self) -> [u8; 32] {
+        Sha256::digest(self.token.as_bytes()).into()
+    }
 }
 
 #[derive(Clone)]
 struct Grant {
     id: Uuid,
     tools: HashSet<String>,
-    expires_at: Instant,
+    expires_at: Option<Instant>,
 }
 
 impl Grant {
@@ -80,17 +84,10 @@ impl CredentialRegistry {
         if lifetime.is_zero() || lifetime > Duration::from_secs(86400) {
             return Err("credential lifetime must be within 24 hours");
         }
-        let tools: HashSet<String> = tools.into_iter().map(Into::into).collect();
-        if tools.len() > 256
-            || tools
-                .iter()
-                .any(|tool| tool.is_empty() || tool.len() > 200 || tool == "*")
-        {
-            return Err("invalid tool allowlist");
-        }
+        let tools = validate_tools(tools)?;
         let now = Instant::now();
         let mut grants = self.grants.lock().expect("credential registry");
-        grants.retain(|_, grant| grant.expires_at > now);
+        grants.retain(|_, grant| grant_active(grant, now));
         if grants.len() >= MAX_CREDENTIALS {
             return Err("credential capacity reached");
         }
@@ -103,10 +100,58 @@ impl CredentialRegistry {
             Grant {
                 id: credential.id,
                 tools,
-                expires_at: now + lifetime,
+                expires_at: Some(now + lifetime),
             },
         );
         Ok(credential)
+    }
+
+    pub fn issue_persistent(
+        &self,
+        tools: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<IssuedCredential, &'static str> {
+        let tools = validate_tools(tools)?;
+        let mut grants = self.grants.lock().expect("credential registry");
+        grants.retain(|_, grant| grant_active(grant, Instant::now()));
+        if grants.len() >= MAX_CREDENTIALS {
+            return Err("credential capacity reached");
+        }
+        let credential = IssuedCredential {
+            id: Uuid::new_v4(),
+            token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+        };
+        grants.insert(
+            credential.digest(),
+            Grant {
+                id: credential.id,
+                tools,
+                expires_at: None,
+            },
+        );
+        Ok(credential)
+    }
+
+    pub fn restore(
+        &self,
+        id: Uuid,
+        digest: [u8; 32],
+        tools: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<(), &'static str> {
+        let tools = validate_tools(tools)?;
+        let mut grants = self.grants.lock().expect("credential registry");
+        grants.retain(|_, grant| grant_active(grant, Instant::now()));
+        if grants.len() >= MAX_CREDENTIALS {
+            return Err("credential capacity reached");
+        }
+        grants.insert(
+            digest,
+            Grant {
+                id,
+                tools,
+                expires_at: None,
+            },
+        );
+        Ok(())
     }
 
     pub fn revoke(&self, id: Uuid) {
@@ -125,9 +170,27 @@ impl CredentialRegistry {
             .lock()
             .expect("credential registry")
             .get(&digest)
-            .filter(|grant| grant.expires_at > Instant::now())
+            .filter(|grant| grant_active(grant, Instant::now()))
             .cloned()
     }
+}
+
+fn validate_tools(
+    tools: impl IntoIterator<Item = impl Into<String>>,
+) -> Result<HashSet<String>, &'static str> {
+    let tools: HashSet<String> = tools.into_iter().map(Into::into).collect();
+    if tools.len() > 256
+        || tools
+            .iter()
+            .any(|tool| tool.is_empty() || tool.len() > 200 || tool == "*")
+    {
+        return Err("invalid tool allowlist");
+    }
+    Ok(tools)
+}
+
+fn grant_active(grant: &Grant, now: Instant) -> bool {
+    grant.expires_at.is_none_or(|expires_at| expires_at > now)
 }
 
 pub(super) struct AccessState {
@@ -214,7 +277,7 @@ pub(super) async fn authorize(
         .lock()
         .expect("credential registry")
         .values()
-        .any(|current| current.id == grant.id && current.expires_at > Instant::now())
+        .any(|current| current.id == grant.id && grant_active(current, Instant::now()))
     {
         return unauthorized();
     }

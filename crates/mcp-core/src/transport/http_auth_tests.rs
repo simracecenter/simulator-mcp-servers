@@ -2,8 +2,10 @@ use super::*;
 use crate::transport::http::access::CredentialRegistry;
 use async_trait::async_trait;
 use axum::{body::Body, http::Request};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt;
+use uuid::Uuid;
 
 struct CountHandler(Arc<AtomicUsize>);
 
@@ -301,4 +303,41 @@ fn credential_issuance_is_bounded_and_has_no_wildcard() {
     assert!(registry.issue(["read"], Duration::from_secs(60)).is_err());
     registry.revoke(first.id());
     assert!(registry.issue(["read"], Duration::from_secs(60)).is_ok());
+}
+
+#[tokio::test]
+async fn persistent_grants_have_no_expiry() {
+    let registry = CredentialRegistry::new();
+    let credential = registry.issue_persistent(["read"]).unwrap();
+    let app = build_protected_router(
+        Arc::new(CountHandler(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(registry),
+    );
+    assert!(!session(&app, credential.token()).await.is_empty());
+}
+
+#[tokio::test]
+async fn restored_credentials_authenticate_and_revoke() {
+    let registry = Arc::new(CredentialRegistry::new());
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let id = Uuid::new_v4();
+    registry.restore(id, digest, ["publisher_status"]).unwrap();
+    let app = build_protected_router(
+        Arc::new(CountHandler(Arc::new(AtomicUsize::new(0)))),
+        registry.clone(),
+    );
+    let session_id = session(&app, &token).await;
+    registry.revoke(id);
+    let mut request = post(
+        &token,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    );
+    request
+        .headers_mut()
+        .insert(SESSION_HEADER, session_id.parse().unwrap());
+    assert_eq!(
+        app.oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
