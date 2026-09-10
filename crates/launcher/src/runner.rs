@@ -7,13 +7,19 @@
 //! transport is wired once at startup and the inner handler can be replaced
 //! when the user switches simulators via the settings UI or API.
 
-use std::sync::{Arc, RwLock};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use async_trait::async_trait;
 use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler};
+use tracing::error;
 
 use crate::config::Sim;
 use crate::TransportKind;
+use crate::{pair_server::build_publisher_router, pairing::PairingState, tls::RigIdentity};
+use tokio::task::JoinHandle;
 
 /// A [`McpHandler`] that delegates to a swappable inner handler.
 ///
@@ -70,6 +76,7 @@ pub fn build_handler(sim: Sim) -> Arc<dyn McpHandler> {
 /// This is separate from [`build_handler`] so the launcher can construct a
 /// single [`SwappableHandler`], hand it to the transport, and swap its inner
 /// handler later without restarting the listener.
+#[allow(dead_code)]
 pub async fn run_transport(
     handler: Arc<SwappableHandler>,
     transport: TransportKind,
@@ -81,6 +88,75 @@ pub async fn run_transport(
     }
 
     Ok(())
+}
+
+pub struct TransportSupervisor {
+    transport: TransportKind,
+    bind: String,
+    handler: Arc<SwappableHandler>,
+    pairing: Arc<PairingState>,
+    identity: Arc<RigIdentity>,
+    task: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl TransportSupervisor {
+    pub fn new(
+        transport: TransportKind,
+        bind: String,
+        handler: Arc<SwappableHandler>,
+        pairing: Arc<PairingState>,
+        identity: Arc<RigIdentity>,
+    ) -> Self {
+        Self {
+            transport,
+            bind,
+            handler,
+            pairing,
+            identity,
+            task: Mutex::new(None),
+        }
+    }
+
+    pub fn start(&self, role: Sim) {
+        if let Some(task) = self.task.lock().expect("transport task").take() {
+            task.abort();
+        }
+        let transport = self.transport;
+        let bind = self.bind.clone();
+        let handler = Arc::clone(&self.handler);
+        let pairing = Arc::clone(&self.pairing);
+        let identity = Arc::clone(&self.identity);
+        let task = tokio::spawn(async move {
+            let result: Result<(), Box<dyn std::error::Error>> = match transport {
+                TransportKind::Stdio => mcp_core::transport::stdio::run_stdio(handler)
+                    .await
+                    .map_err(Into::into),
+                TransportKind::Http if role == Sim::Publisher => {
+                    let address: SocketAddr = match bind.parse() {
+                        Ok(address) => address,
+                        Err(error) => {
+                            error!(%error, "invalid publisher bind address");
+                            return;
+                        }
+                    };
+                    let tls = axum_server::tls_rustls::RustlsConfig::from_config(
+                        identity.server_config(),
+                    );
+                    axum_server::bind_rustls(address, tls)
+                        .serve(build_publisher_router(handler, pairing).into_make_service())
+                        .await
+                        .map_err(Into::into)
+                }
+                TransportKind::Http => mcp_core::transport::http::run_http(&bind, handler)
+                    .await
+                    .map_err(Into::into),
+            };
+            if let Err(error) = result {
+                error!(%error, "mcp server task exited");
+            }
+        });
+        *self.task.lock().expect("transport task") = Some(task);
+    }
 }
 
 #[cfg(test)]

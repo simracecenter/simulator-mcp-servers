@@ -15,17 +15,29 @@ mcp-core = { path = "../mcp-core" }
 iracing-mcp = { path = "../iracing-mcp" }
 lmu-mcp = { path = "../lmu-mcp" }
 publisher-mcp = { path = "../publisher-mcp" }
+publisher = { path = "../publisher" }
 async-trait.workspace = true
 axum = "0.7"
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 clap = { version = "4.5", features = ["derive"] }
 open = "5.3"
+rand = "0.9"
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
 native-windows-gui = "1.0"
 native-windows-derive = "1.0"
 winapi = { version = "0.3", features = ["synchapi", "handleapi", "errhandlingapi", "winerror", "winnt"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tokio-stream = "0.1"
+tower = "0.5"

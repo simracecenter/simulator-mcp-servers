@@ -90,6 +90,36 @@
   .status-value.not-running {
     color: var(--muted);
   }
+  .pairing {
+    display: none;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #1F2937;
+  }
+  .pairing.active {
+    display: block;
+  }
+  .pairing h2 {
+    margin: 0 0 12px;
+    font-size: .95rem;
+  }
+  .pairing-value {
+    margin: 8px 0;
+    color: var(--text);
+    word-break: break-all;
+  }
+  #pairing-code {
+    font: 700 1.8rem ui-monospace, SFMono-Regular, monospace;
+    letter-spacing: .12em;
+  }
+  .pairing button {
+    border: 0;
+    border-radius: 4px;
+    padding: 8px 12px;
+    color: var(--text);
+    background: var(--apex);
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -118,6 +148,13 @@
     <span>Connection status</span>
     <span class="status-value" data-testid="connection-status" id="connection-status">—</span>
   </div>
+  <div class="pairing" id="rig-pairing">
+    <h2>Rig pairing</h2>
+    <div class="pairing-value" id="pairing-code" data-testid="pairing-code">—</div>
+    <div class="pairing-value" id="cert-fingerprint" data-testid="cert-fingerprint">—</div>
+    <div class="pairing-value" id="pairing-status" data-testid="pairing-status">Not paired</div>
+    <button id="unpair" data-testid="unpair" type="button">Unpair</button>
+  </div>
 </div>
 <script>
 const optIracing = document.getElementById('opt-iracing');
@@ -125,6 +162,11 @@ const optLmu = document.getElementById('opt-lmu');
 const optPublisher = document.getElementById('opt-publisher');
 const activeEl = document.getElementById('active-sim');
 const statusEl = document.getElementById('connection-status');
+const pairingEl = document.getElementById('rig-pairing');
+const pairingCodeEl = document.getElementById('pairing-code');
+const fingerprintEl = document.getElementById('cert-fingerprint');
+const pairingStatusEl = document.getElementById('pairing-status');
+const unpairEl = document.getElementById('unpair');
 
 function setActive(sim, connected, toolNames) {
   const simName = sim === 'lmu' ? 'LMU' : (sim === 'publisher' ? 'Publisher' : 'iRacing');
@@ -137,13 +179,21 @@ function setActive(sim, connected, toolNames) {
   optLmu.setAttribute('aria-pressed', sim === 'lmu');
   optPublisher.classList.toggle('active', sim === 'publisher');
   optPublisher.setAttribute('aria-pressed', sim === 'publisher');
+  pairingEl.classList.toggle('active', sim === 'publisher');
   console.log('Telemetry source:', simName, 'Tools:', (toolNames || []).length);
+}
+
+function setPairing(data) {
+  pairingCodeEl.textContent = data.pairingCode || '—';
+  fingerprintEl.textContent = data.certFingerprint || '—';
+  pairingStatusEl.textContent = data.paired ? ('Paired: ' + (data.directorName || 'Director')) : 'Not paired';
 }
 
 async function loadStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
   setActive(data.sim, data.connected, data.toolNames);
+  setPairing(data);
 }
 
 async function selectSim(sim) {
@@ -154,6 +204,12 @@ async function selectSim(sim) {
   });
   const data = await res.json();
   setActive(data.sim, data.connected, data.toolNames);
+  setPairing(data);
+}
+
+async function unpair() {
+  const res = await fetch('/api/unpair', { method: 'POST' });
+  setPairing(await res.json());
 }
 
 optIracing.addEventListener('click', () => selectSim('iracing'));
@@ -162,6 +218,7 @@ optPublisher.addEventListener('click', () => selectSim('publisher'));
 optIracing.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('iracing'); });
 optLmu.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('lmu'); });
 optPublisher.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('publisher'); });
+unpairEl.addEventListener('click', unpair);
 
 loadStatus();
 setInterval(loadStatus, 5000);

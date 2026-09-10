@@ -101,11 +101,13 @@ on the Rig and point the agent at `http://<rig-lan-ip>:8765/mcp`. No hidden `--t
 all keyed by the `Mcp-Session-Id` header issued on `initialize`
 (see [docs/adr/0004-mcp-streamable-http-transport.md](docs/adr/0004-mcp-streamable-http-transport.md)).
 
-That default trades same-machine-only exposure for LAN reachability, and the transport is
-**unauthenticated** — anything that can reach it can invoke any tool. Run it only on a trusted
-network segment and **never port-forward it to the internet** (see [SECURITY.md](SECURITY.md)). To
-restrict the server to the Rig itself, launch with `--bind 127.0.0.1:8765`, or use `--transport
-stdio` when an MCP client spawns the server as a local child process.
+That default trades same-machine-only exposure for LAN reachability for simulator roles, whose
+transport is **unauthenticated** — anything that can reach it can invoke any tool. Run those roles
+only on a trusted network segment and **never port-forward them to the internet** (see
+[SECURITY.md](SECURITY.md)). The publisher role instead serves an HTTPS protected router and
+requires pairing before MCP access. To restrict the server to the Rig itself, launch with
+`--bind 127.0.0.1:8765`, or use `--transport stdio` when an MCP client spawns the server as a local
+child process.
 
 The Director Console (`launcher`) only runs meaningfully on Windows, next to a running simulator.
 Its SDK adapters use local shared memory and Win32 broadcast messages that do not exist on Linux.
