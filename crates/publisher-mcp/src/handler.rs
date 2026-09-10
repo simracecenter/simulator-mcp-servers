@@ -9,7 +9,7 @@ use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, ToolCapability};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::config::{default_config_store, PublisherConfig, PublisherConfigStore};
+use crate::config::{PublisherConfig, PublisherConfigStore};
 use crate::engine::{EngineState, LaunchSpec, PublisherEngine};
 use crate::secret::{default_token_store, SecretString, TokenStore};
 
@@ -52,12 +52,12 @@ impl PublisherMcpHandler {
         }
     }
 
-    pub fn with_defaults() -> Self {
+    pub fn with_config_store(config_store: Arc<dyn PublisherConfigStore>) -> Self {
         #[cfg(windows)]
         let engine: Arc<dyn PublisherEngine> = Arc::new(crate::engine::InProcessEngine::default());
         #[cfg(not(windows))]
         let engine: Arc<dyn PublisherEngine> = Arc::new(crate::engine::UnsupportedEngine);
-        Self::new(engine, default_config_store())
+        Self::new(engine, config_store)
     }
 
     fn error(id: Option<Value>, code: i32, message: impl Into<String>) -> JsonRpcResponse {

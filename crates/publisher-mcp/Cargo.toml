@@ -12,7 +12,6 @@ publisher = { path = "../publisher" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml = "0.8"
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 thiserror.workspace = true

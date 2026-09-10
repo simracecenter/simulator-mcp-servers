@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,60 +15,6 @@ pub struct PublisherConfig {
 pub trait PublisherConfigStore: Send + Sync {
     fn load(&self) -> Result<PublisherConfig, String>;
     fn save(&self, config: &PublisherConfig) -> Result<(), String>;
-}
-
-pub struct DefaultConfigStore;
-
-pub fn default_config_store() -> Arc<dyn PublisherConfigStore> {
-    Arc::new(DefaultConfigStore)
-}
-
-fn config_path() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("SimRaceCenter")
-        .join("config.toml")
-}
-
-impl PublisherConfigStore for DefaultConfigStore {
-    fn load(&self) -> Result<PublisherConfig, String> {
-        let text = match std::fs::read_to_string(config_path()) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Default::default())
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        let value: toml::Value = toml::from_str(&text).map_err(|error| error.to_string())?;
-        value
-            .get("publisher")
-            .cloned()
-            .map(toml::Value::try_into)
-            .transpose()
-            .map_err(|error| error.to_string())
-            .map(|config| config.unwrap_or_default())
-    }
-
-    fn save(&self, config: &PublisherConfig) -> Result<(), String> {
-        let path = config_path();
-        let mut value = match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).map_err(|error| error.to_string())?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                toml::Value::Table(toml::map::Map::new())
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        value["publisher"] = toml::Value::try_from(config).map_err(|error| error.to_string())?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        std::fs::write(
-            path,
-            toml::to_string_pretty(&value).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())
-    }
 }
 
 pub struct InMemoryConfigStore(Mutex<PublisherConfig>);
