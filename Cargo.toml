@@ -4,6 +4,8 @@ members = [
     "crates/mcp-core",
     "crates/iracing-mcp",
     "crates/lmu-mcp",
+    "crates/publisher",
+    "crates/publisher-mcp",
     "crates/launcher",
 ]
 

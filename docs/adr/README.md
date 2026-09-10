@@ -13,6 +13,7 @@ or agent) can see *why* the code is shaped the way it is without re-deriving it 
 | [0005](0005-snapshot-backed-reads.md) | Snapshot-Backed Reads, Dedicated SDK Ownership, and Read Metadata | Accepted |
 | [0006](0006-session-phase-in-overview.md) | Session Identity and Phase on `get_session_overview` | Accepted |
 | [0007](0007-protected-http-transport.md) | Opt-In Protected HTTP Transport | Proposed |
+| [0008](0008-publisher-role.md) | Director Telemetry Publisher Role | Proposed |
 
 ## Adding a new ADR
 

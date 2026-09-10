@@ -105,6 +105,10 @@
       <h3>LMU</h3>
       <p>Le Mans Ultimate</p>
     </div>
+    <div class="option" id="opt-publisher" data-testid="select-publisher" role="button" aria-pressed="false" tabindex="0">
+      <h3>Publisher</h3>
+      <p>Telemetry publisher for Director-managed Rigs</p>
+    </div>
   </div>
   <div class="status">
     <span>Active source</span>
@@ -118,11 +122,12 @@
 <script>
 const optIracing = document.getElementById('opt-iracing');
 const optLmu = document.getElementById('opt-lmu');
+const optPublisher = document.getElementById('opt-publisher');
 const activeEl = document.getElementById('active-sim');
 const statusEl = document.getElementById('connection-status');
 
 function setActive(sim, connected, toolNames) {
-  const simName = sim === 'lmu' ? 'LMU' : 'iRacing';
+  const simName = sim === 'lmu' ? 'LMU' : (sim === 'publisher' ? 'Publisher' : 'iRacing');
   activeEl.textContent = simName;
   statusEl.textContent = connected ? 'Connected' : 'Not Running';
   statusEl.className = 'status-value ' + (connected ? 'connected' : 'not-running');
@@ -130,6 +135,8 @@ function setActive(sim, connected, toolNames) {
   optIracing.setAttribute('aria-pressed', sim === 'iracing');
   optLmu.classList.toggle('active', sim === 'lmu');
   optLmu.setAttribute('aria-pressed', sim === 'lmu');
+  optPublisher.classList.toggle('active', sim === 'publisher');
+  optPublisher.setAttribute('aria-pressed', sim === 'publisher');
   console.log('Telemetry source:', simName, 'Tools:', (toolNames || []).length);
 }
 
@@ -151,8 +158,10 @@ async function selectSim(sim) {
 
 optIracing.addEventListener('click', () => selectSim('iracing'));
 optLmu.addEventListener('click', () => selectSim('lmu'));
+optPublisher.addEventListener('click', () => selectSim('publisher'));
 optIracing.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('iracing'); });
 optLmu.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('lmu'); });
+optPublisher.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('publisher'); });
 
 loadStatus();
 setInterval(loadStatus, 5000);

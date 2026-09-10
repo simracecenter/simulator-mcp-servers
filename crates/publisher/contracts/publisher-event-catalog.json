@@ -1,0 +1,163 @@
+{
+  "description": "Every event type the publisher emits, with the envelope scope it emits. Mirrored into margic/racecontrol at api/contracts/publisher-event-catalog.json.",
+  "events": [
+    {
+      "scope": "CAR_SCOPED",
+      "type": "BATTLE_ENGAGED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "BATTLE_BROKEN"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "BATTLE_CLOSING"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "HORIZON_CLOSING"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "HORIZON_CLOSING_RESOLVED"
+    },
+    {
+      "scope": "SESSION_SCOPED",
+      "type": "RACE_GREEN"
+    },
+    {
+      "scope": "SESSION_SCOPED",
+      "type": "FLAG_YELLOW_FULL_COURSE"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "FLAG_YELLOW_LOCAL"
+    },
+    {
+      "scope": "SESSION_SCOPED",
+      "type": "RACE_CHECKERED"
+    },
+    {
+      "scope": "RIG_SCOPED",
+      "type": "IRACING_CONNECTED"
+    },
+    {
+      "scope": "RIG_SCOPED",
+      "type": "IRACING_DISCONNECTED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "DRIVER_ENTERED_CAR"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "DRIVER_EXITED_CAR"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "OVERTAKE"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "OVERTAKE_FOR_LEAD"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "LAP_COMPLETED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "PIT_ENTRY"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "PIT_EXIT"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "TIRE_DEGRADATION"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "FUEL_PROJECTION"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "FUEL_SAVING_TECHNIQUE"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "INCIDENT_ALERT"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "MICRO_SECTOR_GAIN"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "MICRO_SECTOR_LOSS"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "BRAKING_PROFILE"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "TRAFFIC_INTERCEPT"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "VULNERABILITY_ALERT"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "VULNERABILITY_RESOLVED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "INCIDENT_CLUSTER"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "INCIDENT_CLUSTER_RESOLVED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "TRAFFIC_COMPRESSION_ZONE"
+    },
+    {
+      "scope": "RIG_SCOPED",
+      "type": "PUBLISHER_HELLO"
+    },
+    {
+      "scope": "RIG_SCOPED",
+      "type": "PUBLISHER_GOODBYE"
+    },
+    {
+      "scope": "RIG_SCOPED",
+      "type": "PUBLISHER_HEARTBEAT"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "FOCUS_ME_REQUESTED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "DRIVER_MATERIAL"
+    },
+    {
+      "scope": "SESSION_SCOPED",
+      "type": "SESSION_RESET"
+    },
+    {
+      "scope": "RIG_SCOPED",
+      "type": "BROADCAST_CONTROL_REQUESTED"
+    },
+    {
+      "scope": "SESSION_SCOPED",
+      "type": "SESSION_STATE"
+    }
+  ],
+  "schemaVersion": 1,
+  "source": "margic/director-narrative-core src/race_event.rs"
+}

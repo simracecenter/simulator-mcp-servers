@@ -39,8 +39,10 @@ simulator-mcp-servers/
 │   │                  # helpers, and config load/merge — used by every simulator crate.
 │   ├── iracing-mcp/   # iRacing telemetry + replay/camera control MCP server.
 │   ├── lmu-mcp/       # Le Mans Ultimate MCP server.
+│   ├── publisher/      # Imported in-process telemetry publisher library.
+│   ├── publisher-mcp/  # Director telemetry publisher MCP role.
 │   └── launcher/      # The Director Console: CLI + singleton runner + settings web UI,
-│                       # hosts exactly one active simulator MCP server at a time.
+│                       # hosts exactly one active simulator or publisher role at a time.
 └── e2e/               # Playwright end-to-end tests for the launcher's settings UI.
 ```
 

@@ -40,7 +40,7 @@ pub enum TransportKind {
 }
 
 /// Sim RaceCenter launcher: a singleton runner that hosts at most one
-/// simulator's MCP server at a time (ADR 0001 D2/D3).
+/// simulator's MCP server or publisher role at a time (ADR 0001 D2/D3).
 ///
 /// The full headless/scripting flag surface (PowerShell, Stream Deck) is
 /// tracked as its own follow-up on the project board — these are the basic
@@ -48,7 +48,8 @@ pub enum TransportKind {
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Sim RaceCenter launcher")]
 struct Cli {
-    /// Which simulator's MCP server to run. Overrides config.toml for this run only.
+    /// Which simulator's MCP server or publisher role to run. `publisher` is a
+    /// role, not a simulator. Overrides config.toml for this run only.
     #[arg(long, value_enum)]
     sim: Option<Sim>,
 
@@ -205,5 +206,11 @@ mod tests {
         assert_eq!(cli.bind, "127.0.0.1:9000");
         assert_eq!(cli.settings_bind, "127.0.0.1:9001");
         assert!(cli.headless);
+    }
+
+    #[test]
+    fn cli_parses_publisher_role() {
+        let cli = Cli::try_parse_from(["simracecenter-launcher", "--sim", "publisher"]).unwrap();
+        assert_eq!(cli.sim, Some(Sim::Publisher));
     }
 }

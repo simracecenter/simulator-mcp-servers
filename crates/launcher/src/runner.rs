@@ -59,6 +59,9 @@ pub fn build_handler(sim: Sim) -> Arc<dyn McpHandler> {
             let handler: Arc<dyn McpHandler> = Arc::new(lmu_mcp::LmuMcpHandler::new(adapter));
             handler
         }
+        Sim::Publisher => Arc::new(publisher_mcp::PublisherMcpHandler::with_config_store(
+            Arc::new(crate::config::FileConfigStore),
+        )),
     }
 }
 
@@ -92,5 +95,58 @@ mod tests {
             .unwrap_err();
 
         assert!(!error.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publisher_handler_exposes_only_publisher_tools() {
+        let handler = build_handler(Sim::Publisher);
+        let response = handler
+            .handle(mcp_core::JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::Value::Null,
+            })
+            .await;
+        let result = response.result.unwrap();
+        let names: Vec<&str> = result["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "publisher_status",
+                "publisher_configure",
+                "publisher_start",
+                "publisher_stop",
+                "get_capabilities"
+            ]
+        );
+        assert!(!names.contains(&"get_session_overview"));
+    }
+
+    #[tokio::test]
+    async fn swapping_away_from_publisher_releases_the_previous_handler() {
+        let publisher = build_handler(Sim::Publisher);
+        let swapped = SwappableHandler::new(Arc::clone(&publisher));
+        swapped.set(build_handler(Sim::Iracing));
+        assert_eq!(Arc::strong_count(&publisher), 1);
+
+        let response = swapped
+            .handle(mcp_core::JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::Value::Null,
+            })
+            .await;
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert!(tools
+            .iter()
+            .all(|tool| !tool["name"].as_str().unwrap().starts_with("publisher_")));
     }
 }
