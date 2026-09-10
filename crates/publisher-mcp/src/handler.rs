@@ -95,13 +95,11 @@ impl PublisherMcpHandler {
                 json!(Self::timestamp(snapshot.last_post_at)),
             ),
         ]);
-        if configured {
-            if let Some(value) = config.driver_display_name {
-                data.insert("driverDisplayName".to_string(), json!(value));
-            }
-            if let Some(value) = config.ingest_url {
-                data.insert("ingestUrl".to_string(), json!(value));
-            }
+        if let Some(value) = config.driver_display_name {
+            data.insert("driverDisplayName".to_string(), json!(value));
+        }
+        if let Some(value) = config.ingest_url {
+            data.insert("ingestUrl".to_string(), json!(value));
         }
         let detail = match snapshot.state {
             EngineState::Starting => Some("waiting_for_iracing".to_string()),
@@ -173,7 +171,7 @@ fn tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "publisher_configure",
-            "description": "Stores the local Director ingest endpoint, token, and optional certificate fingerprint/display name. Configuration changes do not restart a running publisher.",
+            "description": "Stores the local Director ingest endpoint, token, certificate fingerprint, and optional display name. Configuration changes do not restart a running publisher.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

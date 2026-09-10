@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
+use uuid::Uuid;
+
+use crate::pairing::PairingRecord;
 
 /// Which simulator's MCP server the launcher hosts. The runner is a
 /// singleton (ADR 0001 D2/D3): exactly one of these is active at a time.
@@ -27,6 +30,10 @@ pub struct LauncherConfig {
     pub active_sim: Sim,
     #[serde(default)]
     pub publisher: publisher_mcp::PublisherConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing: Option<PairingRecord>,
 }
 
 impl Default for LauncherConfig {
@@ -34,6 +41,8 @@ impl Default for LauncherConfig {
         Self {
             active_sim: Sim::Iracing,
             publisher: publisher_mcp::PublisherConfig::default(),
+            device_id: None,
+            pairing: None,
         }
     }
 }
@@ -43,10 +52,14 @@ impl Default for LauncherConfig {
 /// (Linux devcontainer / `cargo test`) — the launcher itself only ships for
 /// Windows.
 pub fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("SimRaceCenter").join("config.toml")
+    base.join("SimRaceCenter")
 }
 
 pub fn load() -> Result<LauncherConfig, mcp_core::config::ConfigError> {
@@ -122,12 +135,23 @@ mod tests {
         ));
         std::env::set_var("APPDATA", &appdata);
 
+        let device_id = Uuid::new_v4();
         let config = LauncherConfig {
             active_sim: Sim::Publisher,
+            device_id: Some(device_id),
+            pairing: Some(PairingRecord {
+                credential_id: Uuid::new_v4(),
+                credential_sha256: "ab".repeat(32),
+                director_name: "Director".to_string(),
+                paired_at: "123".to_string(),
+            }),
             ..LauncherConfig::default()
         };
         save(&config).unwrap();
-        assert_eq!(load().unwrap().active_sim, Sim::Publisher);
+        let loaded = load().unwrap();
+        assert_eq!(loaded.active_sim, Sim::Publisher);
+        assert_eq!(loaded.device_id, Some(device_id));
+        assert_eq!(loaded.pairing, config.pairing);
 
         std::fs::remove_dir_all(&appdata).ok();
         std::env::remove_var("APPDATA");

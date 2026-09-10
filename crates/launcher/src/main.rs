@@ -1,14 +1,17 @@
 mod config;
+mod pair_server;
+mod pairing;
 mod runner;
 mod settings_server;
 mod singleton;
+mod tls;
 mod ui;
 
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use config::Sim;
-use runner::{build_handler, run_transport, SwappableHandler};
+use runner::{build_handler, SwappableHandler, TransportSupervisor};
 use settings_server::SettingsState;
 use singleton::SingletonGuard;
 use tracing::{error, info, warn};
@@ -60,14 +63,11 @@ struct Cli {
     #[arg(long, value_enum, default_value = "http")]
     transport: TransportKind,
 
-    /// Address the MCP HTTP transport binds to. Defaults to `0.0.0.0:8765`,
-    /// which is reachable from other hosts on the LAN: the typical deployment
-    /// runs this server on the Rig while the Broadcast Agent runs on separate
-    /// hardware. The transport has no authentication (see SECURITY.md), so
-    /// anything that can reach it can invoke any tool — keep it on a trusted
-    /// network segment and never port-forward it to the internet. To restrict
-    /// it to same-machine clients, pass a loopback address
-    /// (e.g. `--bind 127.0.0.1:8765`).
+    /// Address the MCP HTTP transport binds to. Defaults to `0.0.0.0:8765`.
+    /// Simulator roles use the existing unauthenticated HTTP transport;
+    /// publisher uses HTTPS with bearer credentials and a separate pairing
+    /// endpoint. To restrict it to same-machine clients, pass a loopback
+    /// address (e.g. `--bind 127.0.0.1:8765`).
     #[arg(long, default_value = "0.0.0.0:8765")]
     bind: String,
 
@@ -108,7 +108,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting simracecenter-launcher"
     );
 
-    if matches!(cli.transport, TransportKind::Http) && is_lan_reachable(&cli.bind) {
+    if matches!(cli.transport, TransportKind::Http)
+        && active_sim != Sim::Publisher
+        && is_lan_reachable(&cli.bind)
+    {
         warn!(
             bind = %cli.bind,
             "MCP transport is reachable off-host and has no authentication; \
@@ -118,15 +121,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let handler = Arc::new(SwappableHandler::new(build_handler(active_sim)));
-    let settings_state = SettingsState::new(handler.clone(), active_sim);
-
-    let transport = cli.transport;
-    let bind = cli.bind;
-    let mcp_handle = tokio::spawn(async move {
-        if let Err(error) = run_transport(handler, transport, &bind).await {
-            error!(%error, "mcp server task exited");
-        }
-    });
+    let identity =
+        Arc::new(tls::load_or_generate(&config::config_dir()).map_err(std::io::Error::other)?);
+    let pairing = Arc::new(
+        pairing::PairingState::new(
+            Arc::new(mcp_core::transport::http::access::CredentialRegistry::new()),
+            Arc::new(pairing::FilePairingStore),
+            tls::host_display_name(),
+            identity.fingerprint.clone(),
+        )
+        .map_err(std::io::Error::other)?,
+    );
+    let supervisor = Arc::new(TransportSupervisor::new(
+        cli.transport,
+        cli.bind,
+        handler.clone(),
+        pairing.clone(),
+        identity.clone(),
+    ));
+    supervisor.start(active_sim);
+    let settings_state = SettingsState::new(handler.clone(), active_sim, pairing, supervisor);
 
     let settings_bind = cli.settings_bind;
     let settings_url = format!("http://{}/", settings_bind);
@@ -138,7 +152,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.headless {
         tokio::select! {
-            _ = mcp_handle => {},
             _ = settings_handle => {},
             _ = tokio::signal::ctrl_c() => {
                 info!("received shutdown signal");
