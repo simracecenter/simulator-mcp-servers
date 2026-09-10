@@ -38,5 +38,21 @@ We'll acknowledge reports as quickly as we can and keep you updated as a fix is 
   telemetry, but that verification is a correctness mechanism, not an authorization mechanism —
   anything that can reach the transport can invoke any tool it exposes.
 
+## Protected transport integration API
+
+`mcp-core::transport::http::build_protected_router` is an opt-in library API for
+future trusted companion integration ([proposed ADR 0007](docs/adr/0007-protected-http-transport.md)).
+It authenticates requests before body parsing, scopes tool calls to explicit
+allowlists, and binds sessions to an expiring, revocable credential. All routes,
+including `/healthz`, require a credential. Browser Origin headers are rejected.
+
+This API is **not wired into the launcher** and does not change the defaults
+above. It is not a complete pairing or remote-management solution. The caller
+must provide authenticated TLS before off-host use; bearer credentials must never
+be sent over off-host plaintext HTTP. Persistent Windows identity/secret storage,
+GUI pairing, session quotas/cleanup, and termination of existing SSE streams on
+revocation remain integration gates. Revocation rejects new requests but does not
+cancel in-flight simulator actions. Mutation leases and fencing are still needed.
+
 If you believe any of these assumptions are insufficient for your deployment, please open an issue
 (non-sensitive) or a private report (sensitive) so we can track hardening work.

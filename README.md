@@ -25,6 +25,11 @@ Status: **early development**. Learn more about the product at
 [docs/adr](docs/adr/) (start with [ADR 0001](docs/adr/0001-project-layout.md)) and the
 [project board](https://github.com/orgs/simracecenter/projects/1).
 
+Trusted companion integration has an opt-in protected HTTP router in `mcp-core`;
+see [proposed ADR 0007](docs/adr/0007-protected-http-transport.md) for its contract
+and remaining TLS/pairing gates. The launcher does not enable it yet, and its
+existing network defaults remain unchanged.
+
 ## What's Here
 
 ```
