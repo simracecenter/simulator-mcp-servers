@@ -66,7 +66,7 @@ async fn pair(State(pairing): State<Arc<PairingState>>, request: Request<Body>) 
         Ok(parsed) => parsed,
         Err(_) => return error_response(StatusCode::UNPROCESSABLE_ENTITY, "schema"),
     };
-    if parsed.pairing_code.len() != 6
+    if parsed.pairing_code.len() != 3
         || !parsed
             .pairing_code
             .bytes()
@@ -223,10 +223,10 @@ mod tests {
     #[tokio::test]
     async fn wrong_codes_lock_pairing_and_correct_code_stays_locked() {
         let (app, pairing) = setup();
-        let wrong = if pairing.pairing_code() == "000000" {
-            "000001"
+        let wrong = if pairing.pairing_code() == "000" {
+            "001"
         } else {
-            "000000"
+            "000"
         };
         for _ in 0..5 {
             let response = app.clone().oneshot(pair_request(wrong)).await.unwrap();
@@ -260,7 +260,7 @@ mod tests {
             .oneshot(
                 Request::post("/pair")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"pairingCode":"123456"}"#))
+                    .body(Body::from(r#"{"pairingCode":"123"}"#))
                     .unwrap(),
             )
             .await

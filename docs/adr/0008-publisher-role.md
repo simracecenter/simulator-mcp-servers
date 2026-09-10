@@ -42,7 +42,7 @@ The Director pairing contract is defined by
 The publisher listener serves HTTPS with a self-signed certificate persisted
 per Rig, and Director performs TOFU by pinning the certificate fingerprint
 supplied during pairing (see Director ADR 0014). `POST /pair` mints one
-persistent credential after validating the one-shot six-digit code. The
+persistent credential after validating the one-shot three-digit code. The
 five-strike lockout, single-pairing conflict response, publisher-only grant
 scope, digest-only credential persistence, and unpair revocation protect the
 exception to ADR 0007's rule that credential issuance is a Rust API rather

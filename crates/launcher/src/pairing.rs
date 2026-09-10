@@ -246,7 +246,7 @@ impl PairingState {
 }
 
 fn generate_code() -> String {
-    format!("{:06}", rand::rng().random_range(0..=999_999))
+    format!("{:03}", rand::rng().random_range(0..=999))
 }
 
 fn rotate_code(code: &Mutex<String>) {
