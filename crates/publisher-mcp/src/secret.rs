@@ -61,6 +61,11 @@ impl SecretString {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[cfg(windows)]
+    pub(crate) fn into_inner(self) -> String {
+        self.0
+    }
 }
 
 impl Clone for SecretString {

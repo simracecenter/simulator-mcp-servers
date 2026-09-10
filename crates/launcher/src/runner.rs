@@ -59,9 +59,7 @@ pub fn build_handler(sim: Sim) -> Arc<dyn McpHandler> {
             let handler: Arc<dyn McpHandler> = Arc::new(lmu_mcp::LmuMcpHandler::new(adapter));
             handler
         }
-        Sim::Publisher => Arc::new(publisher_mcp::PublisherMcpHandler::with_defaults(Arc::new(
-            crate::config::FileConfigStore,
-        ))),
+        Sim::Publisher => Arc::new(publisher_mcp::PublisherMcpHandler::with_defaults()),
     }
 }
 

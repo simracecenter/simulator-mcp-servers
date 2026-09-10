@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct PublisherConfig {
-    pub exe_path: Option<PathBuf>,
     pub ingest_url: Option<String>,
     pub cert_fingerprint: Option<String>,
     pub driver_display_name: Option<String>,
@@ -17,6 +16,60 @@ pub struct PublisherConfig {
 pub trait PublisherConfigStore: Send + Sync {
     fn load(&self) -> Result<PublisherConfig, String>;
     fn save(&self, config: &PublisherConfig) -> Result<(), String>;
+}
+
+pub struct DefaultConfigStore;
+
+pub fn default_config_store() -> Arc<dyn PublisherConfigStore> {
+    Arc::new(DefaultConfigStore)
+}
+
+fn config_path() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("SimRaceCenter")
+        .join("config.toml")
+}
+
+impl PublisherConfigStore for DefaultConfigStore {
+    fn load(&self) -> Result<PublisherConfig, String> {
+        let text = match std::fs::read_to_string(config_path()) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Default::default())
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let value: toml::Value = toml::from_str(&text).map_err(|error| error.to_string())?;
+        value
+            .get("publisher")
+            .cloned()
+            .map(toml::Value::try_into)
+            .transpose()
+            .map_err(|error| error.to_string())
+            .map(|config| config.unwrap_or_default())
+    }
+
+    fn save(&self, config: &PublisherConfig) -> Result<(), String> {
+        let path = config_path();
+        let mut value = match std::fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).map_err(|error| error.to_string())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                toml::Value::Table(toml::map::Map::new())
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        value["publisher"] = toml::Value::try_from(config).map_err(|error| error.to_string())?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::write(
+            path,
+            toml::to_string_pretty(&value).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 
 pub struct InMemoryConfigStore(Mutex<PublisherConfig>);
@@ -49,89 +102,8 @@ impl PublisherConfigStore for InMemoryConfigStore {
     }
 }
 
-pub fn validate_ingest_url(url: &str) -> Result<(), String> {
-    let (scheme, remainder) = url
-        .split_once("://")
-        .ok_or_else(|| "ingestUrl must use https:// or loopback http://".to_string())?;
-    let scheme = scheme.to_ascii_lowercase();
-    if scheme != "https" && scheme != "http" {
-        return Err("ingestUrl must use https:// or loopback http://".to_string());
-    }
-
-    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        let (host, suffix) = rest
-            .split_once(']')
-            .ok_or_else(|| "ingestUrl has an invalid host".to_string())?;
-        if !suffix.is_empty() && !suffix.starts_with(':') {
-            return Err("ingestUrl has an invalid port".to_string());
-        }
-        host
-    } else {
-        authority
-            .split_once(':')
-            .map_or(authority, |(host, _)| host)
-    };
-
-    if host.is_empty() {
-        return Err("ingestUrl must include a host".to_string());
-    }
-    if scheme == "https" {
-        return Ok(());
-    }
-
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::Ipv4Addr>()
-            .map(|ip| ip.octets()[0] == 127)
-            .unwrap_or(false)
-        || host == "::1";
-    if loopback {
-        Ok(())
-    } else {
-        Err("http ingestUrl is only permitted for loopback hosts".to_string())
-    }
-}
-
-pub fn normalize_fingerprint(raw: &str) -> Result<String, String> {
-    let chars: Vec<char> = raw.chars().collect();
-    let valid_hex = |c: char| c.is_ascii_hexdigit();
-    let normalized = if chars.len() == 64 && chars.iter().all(|c| valid_hex(*c)) {
-        chars
-    } else {
-        let parts: Vec<&str> = raw.split(':').collect();
-        if parts.len() != 32
-            || parts
-                .iter()
-                .any(|part| part.len() != 2 || !part.chars().all(valid_hex))
-        {
-            return Err(
-                "certFingerprint must be 64 hex characters or 32 colon-separated pairs".to_string(),
-            );
-        }
-        parts.join("").chars().collect()
-    };
-
-    Ok(normalized
-        .into_iter()
-        .map(|c| c.to_ascii_lowercase())
-        .collect())
-}
-
-pub fn default_exe_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.join("publisher.exe")))
-        .unwrap_or_else(|| PathBuf::from("publisher.exe"))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn ingest_url_validation_table() {
         for url in [
@@ -142,7 +114,7 @@ mod tests {
             "http://127.255.255.255/ingest",
             "http://[::1]:9000",
         ] {
-            assert!(validate_ingest_url(url).is_ok(), "{url}");
+            assert!(publisher::config::validate_local_url(url).is_ok(), "{url}");
         }
         for url in [
             "",
@@ -152,27 +124,27 @@ mod tests {
             "http://[::2]:9000",
             "http://",
         ] {
-            assert!(validate_ingest_url(url).is_err(), "{url}");
+            assert!(publisher::config::validate_local_url(url).is_err(), "{url}");
         }
     }
 
     #[test]
     fn fingerprint_normalization_table() {
         assert_eq!(
-            normalize_fingerprint(
+            publisher::config::normalise_fingerprint(
                 "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899"
             )
             .unwrap(),
             "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
         );
         assert_eq!(
-            normalize_fingerprint(
+            publisher::config::normalise_fingerprint(
                 "AA:bb:CC:dd:EE:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
             )
             .unwrap(),
             "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
         );
-        assert!(normalize_fingerprint("zz").is_err());
-        assert!(normalize_fingerprint("aa:bb").is_err());
+        assert!(publisher::config::normalise_fingerprint("zz").is_err());
+        assert!(publisher::config::normalise_fingerprint("aa:bb").is_err());
     }
 }

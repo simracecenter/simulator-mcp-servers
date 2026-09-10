@@ -145,11 +145,16 @@ async fn get_connected(handler: &SwappableHandler, sim: Sim) -> bool {
     response
         .result
         .and_then(|result| {
-            let data = result.get("structuredContent")?.get("data")?;
             if sim == Sim::Publisher {
+                let text = result.get("content")?.get(0)?.get("text")?.as_str()?;
+                let data: Value = serde_json::from_str(text).ok()?;
                 Some(data.get("state")?.as_str()? == "RUNNING")
             } else {
-                data.get("connected")?.as_bool()
+                result
+                    .get("structuredContent")?
+                    .get("data")?
+                    .get("connected")?
+                    .as_bool()
             }
         })
         .unwrap_or(false)

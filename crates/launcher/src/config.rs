@@ -58,6 +58,7 @@ pub fn save(config: &LauncherConfig) -> Result<(), mcp_core::config::ConfigError
     mcp_core::config::save(&config_path(), config)
 }
 
+#[allow(dead_code)]
 pub struct FileConfigStore;
 
 impl publisher_mcp::PublisherConfigStore for FileConfigStore {
