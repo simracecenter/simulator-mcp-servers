@@ -1,7 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
 
 /// Which simulator's MCP server the launcher hosts. The runner is a
 /// singleton (ADR 0001 D2/D3): exactly one of these is active at a time.
@@ -10,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub enum Sim {
     Iracing,
     Lmu,
+    Publisher,
 }
 
 impl fmt::Display for Sim {
@@ -17,6 +17,7 @@ impl fmt::Display for Sim {
         match self {
             Sim::Iracing => write!(f, "iracing"),
             Sim::Lmu => write!(f, "lmu"),
+            Sim::Publisher => write!(f, "publisher"),
         }
     }
 }
@@ -24,12 +25,15 @@ impl fmt::Display for Sim {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherConfig {
     pub active_sim: Sim,
+    #[serde(default)]
+    pub publisher: publisher_mcp::PublisherConfig,
 }
 
 impl Default for LauncherConfig {
     fn default() -> Self {
         Self {
             active_sim: Sim::Iracing,
+            publisher: publisher_mcp::PublisherConfig::default(),
         }
     }
 }
@@ -54,9 +58,27 @@ pub fn save(config: &LauncherConfig) -> Result<(), mcp_core::config::ConfigError
     mcp_core::config::save(&config_path(), config)
 }
 
+pub struct FileConfigStore;
+
+impl publisher_mcp::PublisherConfigStore for FileConfigStore {
+    fn load(&self) -> Result<publisher_mcp::PublisherConfig, String> {
+        load()
+            .map(|config| config.publisher)
+            .map_err(|error| error.to_string())
+    }
+
+    fn save(&self, publisher: &publisher_mcp::PublisherConfig) -> Result<(), String> {
+        let mut config = load().map_err(|error| error.to_string())?;
+        config.publisher = publisher.clone();
+        save(&config).map_err(|error| error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+
+    use publisher_mcp::PublisherConfigStore;
 
     use super::*;
 
@@ -82,11 +104,78 @@ mod tests {
 
         let config = LauncherConfig {
             active_sim: Sim::Iracing,
+            ..LauncherConfig::default()
         };
         save(&config).unwrap();
         assert_eq!(load().unwrap().active_sim, Sim::Iracing);
 
         std::fs::remove_dir_all(&appdata).ok();
         std::env::remove_var("APPDATA");
+    }
+
+    #[test]
+    fn publisher_active_sim_round_trips_through_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = std::env::temp_dir().join(format!(
+            "simracecenter-launcher-publisher-config-test-{}",
+            std::process::id()
+        ));
+        std::env::set_var("APPDATA", &appdata);
+
+        let config = LauncherConfig {
+            active_sim: Sim::Publisher,
+            ..LauncherConfig::default()
+        };
+        save(&config).unwrap();
+        assert_eq!(load().unwrap().active_sim, Sim::Publisher);
+
+        std::fs::remove_dir_all(&appdata).ok();
+        std::env::remove_var("APPDATA");
+    }
+
+    #[test]
+    fn publisher_store_preserves_active_sim() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = std::env::temp_dir().join(format!(
+            "simracecenter-launcher-publisher-preserve-test-{}",
+            std::process::id()
+        ));
+        std::env::set_var("APPDATA", &appdata);
+        save(&LauncherConfig {
+            active_sim: Sim::Lmu,
+            ..LauncherConfig::default()
+        })
+        .unwrap();
+
+        let store = FileConfigStore;
+        store
+            .save(&publisher_mcp::PublisherConfig {
+                ingest_url: Some("https://director.example.com".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        let config = load().unwrap();
+        assert_eq!(config.active_sim, Sim::Lmu);
+        assert_eq!(
+            config.publisher.ingest_url.as_deref(),
+            Some("https://director.example.com")
+        );
+
+        std::fs::remove_dir_all(&appdata).ok();
+        std::env::remove_var("APPDATA");
+    }
+
+    #[test]
+    fn publisher_table_is_optional_when_parsing_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "simracecenter-launcher-publisher-parse-test-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "active_sim = \"publisher\"\n").unwrap();
+        let config: LauncherConfig = mcp_core::config::load_or_default(&path).unwrap();
+        assert_eq!(config.active_sim, Sim::Publisher);
+        assert_eq!(config.publisher, publisher_mcp::PublisherConfig::default());
+        std::fs::remove_file(path).ok();
     }
 }

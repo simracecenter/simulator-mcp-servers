@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 
 use mcp_core::{JsonRpcRequest, McpHandler};
 
-use crate::config::{self, LauncherConfig, Sim};
+use crate::config::{self, Sim};
 use crate::runner::{build_handler, SwappableHandler};
 
 /// Shared state for the settings server.
@@ -106,9 +106,9 @@ async fn api_sim(
     {
         let mut sim_lock = state.current_sim.write().await;
         if *sim_lock != new_sim {
-            let config = LauncherConfig {
-                active_sim: new_sim,
-            };
+            let mut config = config::load()
+                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            config.active_sim = new_sim;
             config::save(&config)
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
             state.handler.set(build_handler(new_sim));
@@ -120,7 +120,7 @@ async fn api_sim(
 }
 
 async fn build_status(handler: &SwappableHandler, sim: Sim) -> Status {
-    let connected = get_connected(handler).await;
+    let connected = get_connected(handler, sim).await;
     let tool_names = get_tool_names(handler).await;
     Status {
         sim: sim.to_string(),
@@ -129,23 +129,28 @@ async fn build_status(handler: &SwappableHandler, sim: Sim) -> Status {
     }
 }
 
-async fn get_connected(handler: &SwappableHandler) -> bool {
+async fn get_connected(handler: &SwappableHandler, sim: Sim) -> bool {
+    let tool_name = match sim {
+        Sim::Publisher => "publisher_status",
+        Sim::Iracing | Sim::Lmu => "get_session_overview",
+    };
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         id: Some(json!(1)),
         method: "tools/call".to_string(),
-        params: json!({"name": "get_session_overview", "arguments": {}}),
+        params: json!({"name": tool_name, "arguments": {}}),
     };
 
     let response = handler.handle(request).await;
     response
         .result
         .and_then(|result| {
-            result
-                .get("structuredContent")?
-                .get("data")?
-                .get("connected")?
-                .as_bool()
+            let data = result.get("structuredContent")?.get("data")?;
+            if sim == Sim::Publisher {
+                Some(data.get("state")?.as_str()? == "RUNNING")
+            } else {
+                data.get("connected")?.as_bool()
+            }
         })
         .unwrap_or(false)
 }
