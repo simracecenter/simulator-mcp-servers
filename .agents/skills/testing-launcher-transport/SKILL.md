@@ -77,6 +77,10 @@ It takes the `SimRaceCenterLauncher` single-instance mutex: stop the existing te
 instance before another, or it refuses startup. In Windows PTY-driven Python
 probes, submit commands with CR; LF alone may echo without processing.
 
+After a release, inspect the MSVC binary's imports with
+`objdump -p <exe> | grep -i "DLL Name\|<none>"` and run `<exe> --help` on a Windows
+box. GNU-native testing does not reproduce MSVC import-library differences.
+
 ## Streamable HTTP with a real MCP client
 
 Bundled `C:\devin\python` may lack pip. If an SDK is needed:
