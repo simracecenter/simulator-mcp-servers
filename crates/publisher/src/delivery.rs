@@ -29,7 +29,7 @@ use serde_json::json;
 
 use crate::outbox::Outbox;
 use crate::publisher_event::PublisherEvent;
-use crate::transport::{BatchReceipt, PublisherTransport, BATCH_LIMIT};
+use crate::transport::{BatchReceipt, PublisherTransport, TransportErrorKind, BATCH_LIMIT};
 use crate::{log_info, log_warn};
 
 /// In-memory queue bound between the sampling thread and the worker. At
@@ -78,7 +78,8 @@ pub struct DeliveryStats {
     pub events_lost_total: AtomicU64,
     /// Events acknowledged as accepted or spooled by the receiver.
     pub events_delivered_total: AtomicU64,
-    /// Events the receiver explicitly rejected inside an acknowledged batch.
+    /// Events the receiver explicitly rejected — inside an acknowledged batch
+    /// or as a whole-batch terminal 4xx (quarantined as rejected, not lost).
     pub events_rejected_total: AtomicU64,
     /// Events the receiver reported as already-seen duplicates.
     pub events_duplicate_total: AtomicU64,
@@ -431,9 +432,39 @@ fn worker_loop(
                             }
                             Err(e) => {
                                 shared.stats.calls_failed.fetch_add(1, Ordering::SeqCst);
-                                shared.stats.connected.store(false, Ordering::SeqCst);
                                 *shared.stats.last_error_kind.lock().unwrap() =
                                     Some(e.kind.label());
+                                if let TransportErrorKind::Http(code) = e.kind {
+                                    if definitive_rejection(code) {
+                                        // The receiver answered a terminal
+                                        // 4xx (schema, oversize): it will
+                                        // never accept this file. Quarantine
+                                        // the batch and count its events
+                                        // rejected rather than retry forever.
+                                        log_warn!(
+                                            "[delivery] receiver rejected batch (HTTP {code}); quarantining"
+                                        );
+                                        // The receiver answered — connected,
+                                        // it simply refused this batch.
+                                        shared.stats.connected.store(true, Ordering::SeqCst);
+                                        let rejected = o.quarantine_front();
+                                        outbox_loss_seen = o.dropped_events_total();
+                                        shared
+                                            .stats
+                                            .events_rejected_total
+                                            .fetch_add(rejected, Ordering::SeqCst);
+                                        shared
+                                            .stats
+                                            .outbox_pending_batches
+                                            .store(o.pending_len(), Ordering::SeqCst);
+                                        resend_after = Instant::now();
+                                        continue;
+                                    }
+                                    // The receiver answered — still connected.
+                                    shared.stats.connected.store(true, Ordering::SeqCst);
+                                } else {
+                                    shared.stats.connected.store(false, Ordering::SeqCst);
+                                }
                                 log_warn!("[delivery] delivery failed, will retry: {e}");
                                 resend_after = Instant::now() + resend_delay;
                                 if state.shutting {
@@ -505,6 +536,13 @@ fn worker_loop(
     }
 
     log_info!("[delivery] worker stopped");
+}
+
+// A 4xx the receiver considers terminal — it will reject this batch on every
+// retry. 408 (timeout) and 429 (throttle) stay retriable; 401/403 arrive as
+// `Auth` after the transport's own token refresh.
+fn definitive_rejection(status: u16) -> bool {
+    (400..500).contains(&status) && status != 408 && status != 429
 }
 
 fn record_receipt(stats: &DeliveryStats, receipt: BatchReceipt) {
@@ -723,6 +761,43 @@ mod tests {
         assert!(wait_for(2000, || delivery.stats().events_delivered_total == 1));
         mock.assert();
         delivery.shutdown(11.0, 101, 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poison_batch_is_quarantined_and_counted_rejected_not_retried() {
+        let dir = temp_outbox("poison");
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/publisher/v2/ingest")
+            .with_status(422)
+            .with_body(r#"{"error":"schema","issues":["bad event"]}"#)
+            .create();
+
+        let delivery = service(&server.url(), &dir, 16);
+        delivery.tick(10.0, 100, 7);
+        delivery.enqueue(test_event(1));
+        delivery.enqueue(test_event(2));
+        delivery.request_flush(10.0, 100, 7);
+
+        assert!(wait_for(2_000, || delivery.stats().events_rejected_total == 2));
+        // No pending file remains, and the corrupt-batch marker was kept.
+        assert_eq!(delivery_files(&dir), 0);
+        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".corrupt")));
+        let stats = delivery.stats();
+        assert_eq!(stats.events_lost_total, 0);
+        assert_eq!(stats.events_delivered_total, 0);
+        assert!(stats.connected);
+        // A definitive rejection is not retried: call count stays frozen.
+        let calls = stats.calls_total;
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(delivery.stats().calls_total, calls);
+        mock.assert();
+        delivery.shutdown(10.0, 101, 7);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

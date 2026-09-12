@@ -66,7 +66,10 @@ re-delivers recovered files in order on the next start; the receiver
 deduplicates re-deliveries by event `id`. The outbox is bounded
 (`512` pending batches ≈ 10 000 events): at the bound the oldest file is
 dropped and counted, and a corrupt file is quarantined to `*.json.corrupt`
-rather than stalling later deliveries. `accepted`/`rejected`/`duplicate`
+rather than stalling later deliveries. A terminal 4xx from the receiver
+(schema, oversize — everything but 408/429) is a definitive rejection: the
+file is quarantined and its events counted `events_rejected_total` instead of
+retried forever. `accepted`/`rejected`/`duplicate`
 receipt fields and `events_lost_total`/`outbox_pending_batches` are surfaced
 through `status.json` and the `publisher_status` MCP snapshot, so loss and
 backlog are visible to operators instead of silent.
