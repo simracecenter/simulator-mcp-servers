@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ use crate::{log_info, log_warn, publisher_event::PublisherEvent};
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Maximum number of events in a single POST body.
-const BATCH_LIMIT: usize = 20;
+pub const BATCH_LIMIT: usize = 20;
 
 /// Retry delays (ms) for 5xx / network errors. Three attempts after initial.
 const RETRY_DELAYS_MS: &[u64] = &[500, 1_000, 2_000];
@@ -123,20 +123,38 @@ enum Credential {
     Static(String),
 }
 
-/// Synchronous HTTP transport that holds an in-memory event queue, acquires
-/// Azure AD tokens, and batch-POSTs events to Race Control.
+/// Per-batch acknowledgement parsed from the ingest response body.
+///
+/// The Director receiver answers `202` with
+/// `{accepted, rejected, duplicate, spooled}`; when a receiver returns an empty
+/// or unparseable body, `accepted` falls back to the posted batch size — a 2xx
+/// acknowledgement covers the whole batch.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BatchReceipt {
+    /// HTTP status of the acknowledging response (0 in dry-run).
+    pub http_status: u16,
+    pub accepted: usize,
+    pub rejected: usize,
+    pub duplicate: usize,
+    /// Receiver persisted the batch for later delivery to Core instead of
+    /// accepting it immediately. Still an acknowledgement.
+    pub spooled: bool,
+}
+
+/// Synchronous HTTP transport that acquires tokens and batch-POSTs serialized
+/// ingest bodies. Queueing, durability and pacing live in
+/// [`crate::delivery::DeliveryService`] — this type performs one POST at a time
+/// and owns no event buffer.
 pub struct PublisherTransport {
     credential: Credential,
     ingest_url: String,
     agent: ureq::Agent,
     batch_interval_ms: u64,
-    queue: Vec<PublisherEvent>,
-    last_flush: Instant,
     /// When `true`, batches are pretty-printed to stdout instead of POSTed.
     /// Enabled by the `--dry-run` flag on the publisher binary.
     dry_run: bool,
     /// Retry delays (ms) applied after the initial attempt. Overridable in
-    /// tests via `set_retry_delays_for_test`.
+    /// tests via `set_retry_delays_for_test` and cleared on shutdown drain.
     retry_delays: Vec<u64>,
 }
 
@@ -169,8 +187,6 @@ impl PublisherTransport {
             ingest_url,
             agent: ureq::AgentBuilder::new().build(),
             batch_interval_ms,
-            queue: Vec::new(),
-            last_flush: Instant::now(),
             dry_run: false,
             retry_delays: RETRY_DELAYS_MS.to_vec(),
         }
@@ -205,8 +221,6 @@ impl PublisherTransport {
             ingest_url,
             agent,
             batch_interval_ms,
-            queue: Vec::new(),
-            last_flush: Instant::now(),
             dry_run: false,
             retry_delays: RETRY_DELAYS_MS.to_vec(),
         })
@@ -217,14 +231,14 @@ impl PublisherTransport {
         self.dry_run = dry_run;
     }
 
-    /// Add one event to the in-memory queue.
-    pub fn enqueue(&mut self, event: PublisherEvent) {
-        self.queue.push(event);
+    /// Batch pacing interval configured for this transport.
+    pub fn batch_interval(&self) -> Duration {
+        Duration::from_millis(self.batch_interval_ms)
     }
 
-    /// Number of events currently buffered for the next batch.
-    pub fn queued_len(&self) -> usize {
-        self.queue.len()
+    /// Whether dry-run mode is active (batches are printed, never POSTed).
+    pub fn is_dry_run(&self) -> bool {
+        self.dry_run
     }
 
     /// Warm up authentication by ensuring a valid bearer token is available.
@@ -241,83 +255,49 @@ impl PublisherTransport {
         Ok(())
     }
 
-    /// Call once per frame. Flushes automatically when the interval elapses
-    /// or the queue reaches [`BATCH_LIMIT`].
-    pub fn tick(&mut self, session_time: f64, session_tick: i64, sub_session_id: i64) {
-        let elapsed = self.last_flush.elapsed().as_millis() as u64;
-        if elapsed >= self.batch_interval_ms || self.queue.len() >= BATCH_LIMIT {
-            if let Err(e) = self.flush(session_time, session_tick, sub_session_id) {
-                log_warn!("[transport] flush error: {e}");
-            }
-        }
-    }
-
-    /// Like [`tick`] but returns `Ok(true)` if events were actually posted,
-    /// `Ok(false)` if the interval has not elapsed yet or the queue was empty,
-    /// or `Err` on failure.
-    pub fn tick_result(
+    /// Build the ingest body for `events` and POST it with the configured
+    /// retry schedule. The caller is responsible for persisting the body
+    /// before this call when durability is required — this method does not
+    /// buffer anything.
+    pub fn post_events(
         &mut self,
+        events: &[PublisherEvent],
         session_time: f64,
         session_tick: i64,
         sub_session_id: i64,
-    ) -> Result<bool, TransportError> {
-        let elapsed = self.last_flush.elapsed().as_millis() as u64;
-        if elapsed >= self.batch_interval_ms || self.queue.len() >= BATCH_LIMIT {
-            self.flush(session_time, session_tick, sub_session_id)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Drain the entire queue synchronously. Call on shutdown to guarantee
-    /// all events are delivered before the process exits.
-    /// Returns `Ok(true)` if at least one batch was posted, `Ok(false)` if
-    /// the queue was already empty.
-    pub fn flush(
-        &mut self,
-        session_time: f64,
-        session_tick: i64,
-        sub_session_id: i64,
-    ) -> Result<bool, TransportError> {
-        if self.queue.is_empty() {
-            return Ok(false);
-        }
-        while !self.queue.is_empty() {
-            let n = self.queue.len().min(BATCH_LIMIT);
-            let batch = self.queue.drain(..n).collect::<Vec<_>>();
-            self.post_batch(&batch, session_time, session_tick, sub_session_id)?;
-        }
-        self.last_flush = Instant::now();
-        Ok(true)
-    }
-
-    // ── Private ───────────────────────────────────────────────────────────────
-
-    fn post_batch(
-        &mut self,
-        batch: &[PublisherEvent],
-        session_time: f64,
-        session_tick: i64,
-        sub_session_id: i64,
-    ) -> Result<(), TransportError> {
-        let body = IngestRequest {
+    ) -> Result<BatchReceipt, TransportError> {
+        let body = serde_json::to_value(IngestRequest {
             sub_session_id,
             session_time,
             session_tick,
-            events: batch,
-        };
-        let body_value = serde_json::to_value(&body).expect("IngestRequest is always serialisable");
+            events,
+        })
+        .expect("IngestRequest is always serialisable");
+        self.post_body(&body)
+    }
+
+    /// POST a pre-serialized ingest body (typically read back from the durable
+    /// outbox) with the configured retry schedule.
+    pub fn post_body(
+        &mut self,
+        body_value: &serde_json::Value,
+    ) -> Result<BatchReceipt, TransportError> {
+        let event_count = body_value
+            .get("events")
+            .and_then(|e| e.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
 
         if self.dry_run {
-            let pretty = serde_json::to_string_pretty(&body_value)
+            let pretty = serde_json::to_string_pretty(body_value)
                 .expect("IngestRequest is always serialisable");
             println!(
                 "[dry-run] POST {} — {} event(s):\n{}",
-                self.ingest_url,
-                batch.len(),
-                pretty
+                self.ingest_url, event_count, pretty
             );
-            return Ok(());
+            // A printed batch is not an acknowledgement — report zero accepted
+            // so dry-run never inflates delivered counters.
+            return Ok(BatchReceipt::default());
         }
 
         // Retry loop: initial attempt + up to `retry_delays.len()` retries on
@@ -340,7 +320,7 @@ impl PublisherTransport {
                 .post(&self.ingest_url)
                 .set("Authorization", &format!("Bearer {token}"))
                 .set("Content-Type", "application/json")
-                .send_json(&body_value);
+                .send_json(body_value);
 
             // ureq v2 returns non-2xx as Err(ureq::Error::Status(code, resp)).
             // All match arms must be on the Err side for non-2xx status codes.
@@ -349,10 +329,10 @@ impl PublisherTransport {
                     let status = resp.status();
                     let body = resp.into_string().unwrap_or_default();
                     if !body.is_empty() {
-                        let body = self.redact(&body);
-                        log_info!("[transport] HTTP {status} response body: {body}");
+                        let redacted = self.redact(&body);
+                        log_info!("[transport] HTTP {status} response body: {redacted}");
                     }
-                    return Ok(());
+                    return Ok(parse_receipt(status, &body, event_count));
                 }
 
                 Err(ureq::Error::Status(401, resp)) => {
@@ -379,14 +359,18 @@ impl PublisherTransport {
                             .post(&self.ingest_url)
                             .set("Authorization", &format!("Bearer {token}"))
                             .set("Content-Type", "application/json")
-                            .send_json(&body_value);
+                            .send_json(body_value);
                         return match result2 {
                             Ok(r2) => {
-                                let body2 = self.redact(&r2.into_string().unwrap_or_default());
+                                let status2 = r2.status();
+                                let body2 = r2.into_string().unwrap_or_default();
                                 if !body2.is_empty() {
-                                    log_info!("[transport] HTTP {} response body: {body2}", 200);
+                                    let redacted2 = self.redact(&body2);
+                                    log_info!(
+                                        "[transport] HTTP {status2} response body: {redacted2}"
+                                    );
                                 }
-                                Ok(())
+                                Ok(parse_receipt(status2, &body2, event_count))
                             }
                             Err(ureq::Error::Status(code, r2)) => {
                                 let body2 = self.redact(&r2.into_string().unwrap_or_default());
@@ -614,10 +598,42 @@ impl PublisherTransport {
     }
 
     /// Replace the retry delay schedule (initial attempt still fires).
+    /// Delivery uses an empty schedule for the bounded shutdown drain; tests
+    /// use it to keep retry behavior deterministic.
+    pub fn set_retry_delays(&mut self, delays: &[u64]) {
+        self.retry_delays = delays.to_vec();
+    }
+
+    /// Replace the retry delay schedule (initial attempt still fires).
     /// **Test use only.**
     #[cfg(test)]
     pub fn set_retry_delays_for_test(&mut self, delays: &[u64]) {
-        self.retry_delays = delays.to_vec();
+        self.set_retry_delays(delays);
+    }
+}
+
+/// Parse a 2xx ingest response body into a [`BatchReceipt`]. When the body is
+/// empty or unparseable, `accepted` falls back to `batch_size` — the HTTP
+/// acknowledgement alone covers the whole batch.
+fn parse_receipt(status: u16, body: &str, batch_size: usize) -> BatchReceipt {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let Some(value) = parsed else {
+        return BatchReceipt {
+            http_status: status,
+            accepted: batch_size,
+            ..BatchReceipt::default()
+        };
+    };
+    let count = |key: &str| value.get(key).and_then(|v| v.as_u64()).map(|n| n as usize);
+    BatchReceipt {
+        http_status: status,
+        accepted: count("accepted").unwrap_or(batch_size),
+        rejected: count("rejected").unwrap_or(0),
+        duplicate: count("duplicate").unwrap_or(0),
+        spooled: value
+            .get("spooled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     }
 }
 
@@ -729,8 +745,7 @@ mod tests {
         );
 
         let mut transport = make_transport(&server.url());
-        transport.enqueue(event);
-        transport.flush(10.0, 100, 99999).unwrap();
+        transport.post_events(&[event], 10.0, 100, 99999).unwrap();
 
         mock.assert();
     }
@@ -796,8 +811,7 @@ mod tests {
                 None,
                 None,
             );
-            transport.enqueue(event);
-            transport.flush(10.0, 100, 1).unwrap();
+            transport.post_events(&[event], 10.0, 100, 1).unwrap();
         }
 
         // No token fetch calls (token was injected) — if token refresh were
@@ -855,8 +869,9 @@ mod tests {
 
         let mut transport =
             PublisherTransport::new_local(&server.url(), "local-token", None, 500).unwrap();
-        transport.enqueue(race_green_event());
-        transport.flush(10.0, 100, 99999).unwrap();
+        transport
+            .post_events(&[race_green_event()], 10.0, 100, 99999)
+            .unwrap();
 
         mock.assert();
         assert!(transport.token_expires_at().is_none());
@@ -879,8 +894,9 @@ mod tests {
         transport.set_dry_run(true);
 
         transport.warmup_auth().unwrap();
-        transport.enqueue(race_green_event());
-        assert!(transport.flush(10.0, 100, 99999).unwrap());
+        transport
+            .post_events(&[race_green_event()], 10.0, 100, 99999)
+            .unwrap();
 
         ingest_mock.assert();
         token_mock.assert();
@@ -899,8 +915,9 @@ mod tests {
 
         let mut transport =
             PublisherTransport::new_local(&server.url(), "local-token", None, 500).unwrap();
-        transport.enqueue(race_green_event());
-        let err = transport.flush(10.0, 100, 99999).unwrap_err();
+        let err = transport
+            .post_events(&[race_green_event()], 10.0, 100, 99999)
+            .unwrap_err();
 
         assert_eq!(err.kind, TransportErrorKind::Auth);
         mock.assert();
@@ -918,8 +935,9 @@ mod tests {
 
         let mut transport =
             PublisherTransport::new_local(&server.url(), "local-token", None, 500).unwrap();
-        transport.enqueue(race_green_event());
-        let err = transport.flush(10.0, 100, 99999).unwrap_err();
+        let err = transport
+            .post_events(&[race_green_event()], 10.0, 100, 99999)
+            .unwrap_err();
 
         mock.assert();
         assert_eq!(err.kind, TransportErrorKind::Http(500));
@@ -1040,8 +1058,9 @@ mod tests {
         let url = format!("https://127.0.0.1:{}", server.port);
         let mut transport =
             PublisherTransport::new_local(&url, "tok", Some(&fingerprint), 500).unwrap();
-        transport.enqueue(race_green_event());
-        transport.flush(10.0, 100, 99999).unwrap();
+        transport
+            .post_events(&[race_green_event()], 10.0, 100, 99999)
+            .unwrap();
 
         let request = server
             .rx
@@ -1075,8 +1094,9 @@ mod tests {
         let mut transport =
             PublisherTransport::new_local(&url, "tok", Some(&wrong_fingerprint), 500).unwrap();
         transport.set_retry_delays_for_test(&[]); // single attempt
-        transport.enqueue(race_green_event());
-        let err = transport.flush(10.0, 100, 99999).unwrap_err();
+        let err = transport
+            .post_events(&[race_green_event()], 10.0, 100, 99999)
+            .unwrap_err();
 
         assert!(
             matches!(
