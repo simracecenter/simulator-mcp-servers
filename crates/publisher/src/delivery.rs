@@ -652,7 +652,9 @@ mod tests {
             .create();
 
         let delivery = service(&server.url(), &dir, 16);
-        delivery.tick(10.0, 100, 7);
+        // Enqueue while the session is unresolved (sid 0) so both events land
+        // in one flushed batch — a resolved-session enqueue can split across
+        // the immediate first batch and the flush.
         delivery.enqueue(test_event(1));
         delivery.enqueue(test_event(2));
         delivery.request_flush(10.0, 100, 7);
@@ -678,7 +680,6 @@ mod tests {
         // Phase 1 — receiver down: events must land in the outbox and stay.
         {
             let delivery = service(&dead_url(), &dir, 16);
-            delivery.tick(10.0, 100, 7);
             for n in 0..3 {
                 delivery.enqueue(test_event(n));
             }
