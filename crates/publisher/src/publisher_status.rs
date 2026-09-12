@@ -34,13 +34,23 @@ pub struct PublisherStatus {
     pub last_post_at: Option<SystemTime>,
     /// `TransportErrorKind::label()` of the last failed call.
     pub last_error_kind: Option<String>,
-    /// Events buffered in the transport queue right now.
+    /// Events buffered in the delivery queue right now.
     pub queued_events: usize,
+    /// Batch files persisted in the outbox but not yet acknowledged.
+    pub outbox_pending_batches: usize,
     /// Set on shutdown so `status.json` reports `stopped`.
     pub stopped: bool,
 
     // ── Counters ──────────────────────────────────────────────────────────
     pub events_enqueued_total: u64,
+    /// Events acknowledged (accepted or spooled) by the receiver.
+    pub events_delivered_total: u64,
+    /// Events the receiver explicitly rejected inside an acknowledged batch.
+    pub events_rejected_total: u64,
+    /// Events the receiver reported as already-seen duplicates.
+    pub events_duplicate_total: u64,
+    /// Events permanently dropped (queue overflow, outbox bound, quarantine).
+    pub events_lost_total: u64,
     pub calls_total: u64,
     pub calls_failed: u64,
 
@@ -86,8 +96,13 @@ impl PublisherStatus {
             last_post_at: self.last_post_at.map(crate::headless::iso8601_utc),
             last_error_kind: self.last_error_kind.clone(),
             queued_events: self.queued_events,
+            outbox_pending_batches: self.outbox_pending_batches,
             sub_session_id: self.sub_session_id,
             events_enqueued_total: self.events_enqueued_total,
+            events_delivered_total: self.events_delivered_total,
+            events_rejected_total: self.events_rejected_total,
+            events_duplicate_total: self.events_duplicate_total,
+            events_lost_total: self.events_lost_total,
             calls_total: self.calls_total,
             calls_failed: self.calls_failed,
             pid: std::process::id(),

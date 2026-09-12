@@ -18,10 +18,12 @@ pub fn run_pipeline(
     use crate::{
         config::Destination,
         controls::{now_wall_clock_ms, simulated_request, ControlRequest},
+        delivery::{DeliveryService, DEFAULT_MAX_OUTBOX_BATCHES},
         engine::NarrativeEngine,
         lifecycle::{HeartbeatScheduler, IntervalScheduler, LifecyclePublisher},
         log_info, log_warn,
         publisher_event::{build_event, PublisherEvent},
+        publisher_status::PublisherStatus,
         race_event::{EventScope, RaceEvent},
         session_info::{
             is_ai_session, parse_sub_session_id, synthetic_sub_session_id, RosterCache,
@@ -31,6 +33,26 @@ pub fn run_pipeline(
         telemetry_frame::TelemetryFrame,
         transport::PublisherTransport,
     };
+
+    /// Copy worker-owned delivery counters into the shared status surface.
+    /// The worker thread is the single writer for these fields; pipeline code
+    /// only ever reads them.
+    fn copy_delivery_stats(s: &mut PublisherStatus, d: &DeliveryService) {
+        let st = d.stats();
+        s.queued_events = st.queued_events;
+        s.outbox_pending_batches = st.outbox_pending_batches;
+        s.events_delivered_total = st.events_delivered_total;
+        s.events_rejected_total = st.events_rejected_total;
+        s.events_duplicate_total = st.events_duplicate_total;
+        s.events_lost_total = st.events_lost_total;
+        s.calls_total = st.calls_total;
+        s.calls_failed = st.calls_failed;
+        s.rc_connected = st.connected;
+        s.rc_last_http_status = st.last_http_status;
+        s.last_post_at = st.last_post_at;
+        s.last_error_kind = st.last_error_kind;
+        s.token_expires_at = st.token_expires_at;
+    }
 
     let dry_run = false;
     let simulate = None;
@@ -91,6 +113,22 @@ pub fn run_pipeline(
             s.last_error_kind = Some(e.kind.label());
         }
     }
+
+    // ── Delivery worker ───────────────────────────────────────────────────
+    // All HTTP, token refresh and retry sleeps live on this thread — the
+    // sampling loop below only pushes into a bounded in-memory queue. Each
+    // batch is persisted to the on-disk outbox before posting and deleted
+    // only after a 2xx, so a kill between send and ack re-delivers on the
+    // next launch and a dead receiver never stalls the frame loop.
+    let outbox_dir = crate::headless::data_dir().join("outbox");
+    let delivery = match DeliveryService::start(transport, &outbox_dir, DEFAULT_MAX_OUTBOX_BATCHES)
+    {
+        Ok(d) => d,
+        Err(e) => {
+            log_warn!("[publisher] outbox setup failed: {e}");
+            return Err(format!("outbox setup failed: {e}"));
+        }
+    };
 
     // ── Wait for iRacing ──────────────────────────────────────────────────
 
@@ -185,16 +223,13 @@ pub fn run_pipeline(
                         current_session_meta.as_ref(),
                         Some(sub_session_id),
                     );
-                    transport.enqueue(pe);
+                    delivery.enqueue(pe);
                     status.lock().unwrap().events_enqueued_total += 1;
-                    if let Err(e) = transport.flush(
+                    delivery.request_flush(
                         frame.session_time as f64,
                         frame.session_tick,
                         sub_session_id,
-                    ) {
-                        log_warn!("[publisher] flush error after IRACING_DISCONNECTED: {e}");
-                        status.lock().unwrap().last_error_kind = Some(e.kind.label());
-                    }
+                    );
                 }
             }
             {
@@ -295,16 +330,13 @@ pub fn run_pipeline(
                                         None,
                                         Some(sid),
                                     );
-                                    transport.enqueue(pe);
+                                    delivery.enqueue(pe);
                                     status.lock().unwrap().events_enqueued_total += 1;
-                                    if let Err(e) = transport.flush(
+                                    delivery.request_flush(
                                         frame.session_time as f64,
                                         frame.session_tick,
                                         sid,
-                                    ) {
-                                        status.lock().unwrap().last_error_kind =
-                                            Some(e.kind.label());
-                                    }
+                                    );
                                 }
                                 // Reset session-scoped state.
                                 let previous_sub_session_id = sub_session_id;
@@ -341,7 +373,7 @@ pub fn run_pipeline(
                                         None,
                                         Some(sid),
                                     );
-                                    transport.enqueue(pe);
+                                    delivery.enqueue(pe);
                                     status.lock().unwrap().events_enqueued_total += 1;
                                 }
                             }
@@ -366,7 +398,7 @@ pub fn run_pipeline(
                                         {
                                             if !car.driver_name.is_empty() {
                                                 *car_ref = car.clone();
-                                                transport.enqueue(pe);
+                                                delivery.enqueue(pe);
                                                 status.lock().unwrap().events_enqueued_total += 1;
                                                 continue;
                                             }
@@ -376,7 +408,7 @@ pub fn run_pipeline(
                                     continue;
                                 }
 
-                                transport.enqueue(pe);
+                                delivery.enqueue(pe);
                                 status.lock().unwrap().events_enqueued_total += 1;
                             }
                         }
@@ -416,7 +448,7 @@ pub fn run_pipeline(
                                     current_session_meta.as_ref(),
                                     Some(sub_session_id),
                                 );
-                                transport.enqueue(pe);
+                                delivery.enqueue(pe);
                                 status.lock().unwrap().events_enqueued_total += 1;
                                 emit_iracing_connected = false;
                             }
@@ -439,7 +471,7 @@ pub fn run_pipeline(
                             {
                                 pending_events.push(pe);
                             } else {
-                                transport.enqueue(pe);
+                                delivery.enqueue(pe);
                                 status.lock().unwrap().events_enqueued_total += 1;
                             }
                         }
@@ -492,7 +524,7 @@ pub fn run_pipeline(
                             current_session_meta.as_ref(),
                             Some(sub_session_id),
                         );
-                        transport.enqueue(pe);
+                        delivery.enqueue(pe);
                         status.lock().unwrap().events_enqueued_total += 1;
                     }
                 }
@@ -520,7 +552,7 @@ pub fn run_pipeline(
                             current_session_meta.as_ref(),
                             Some(sub_session_id),
                         );
-                        transport.enqueue(pe);
+                        delivery.enqueue(pe);
                         let mut s = status.lock().unwrap();
                         s.events_enqueued_total += 1;
                         s.push_event_log(log_entry);
@@ -555,21 +587,21 @@ pub fn run_pipeline(
                             pending_events.push(pe);
                         }
                     } else {
-                        transport.enqueue(pe);
+                        delivery.enqueue(pe);
                         let mut s = status.lock().unwrap();
                         s.events_enqueued_total += 1;
                         s.push_event_log(log_entry);
                     }
                 }
 
-                // Frame-level status.
+                // Frame-level status — delivery counters come from the
+                // worker, the single writer for those fields.
                 {
                     let mut s = status.lock().unwrap();
                     s.current_lap = frame.lap;
                     s.session_tick = frame.session_tick;
                     s.session_time_secs = frame.session_time as f64;
-                    s.token_expires_at = transport.token_expires_at();
-                    s.queued_events = transport.queued_len();
+                    copy_delivery_stats(&mut s, &delivery);
                 }
 
                 // Flush — skip until subSessionId is resolved to avoid persisting
@@ -615,24 +647,18 @@ pub fn run_pipeline(
                                 current_session_meta.as_ref(),
                                 Some(sub_session_id),
                             );
-                            transport.enqueue(pe);
+                            delivery.enqueue(pe);
                             {
                                 let mut s = status.lock().unwrap();
                                 s.events_enqueued_total += 1;
                                 s.push_event_log(log_entry);
                             }
                         }
-                        if let Err(e) = transport.flush(
+                        delivery.request_flush(
                             frame.session_time as f64,
                             frame.session_tick,
                             sub_session_id,
-                        ) {
-                            log_warn!("[controls] flush error: {e}");
-                            let mut s = status.lock().unwrap();
-                            s.calls_total += 1;
-                            s.calls_failed += 1;
-                            s.last_error_kind = Some(e.kind.label());
-                        }
+                        );
                     }
                 }
 
@@ -651,7 +677,7 @@ pub fn run_pipeline(
                         current_session_meta.as_ref(),
                         Some(sub_session_id),
                     );
-                    transport.enqueue(pe);
+                    delivery.enqueue(pe);
                     status.lock().unwrap().events_enqueued_total += 1;
                 }
 
@@ -680,38 +706,20 @@ pub fn run_pipeline(
                         .as_ref()
                         .is_some_and(|car| car.driver_name.is_empty())
                     {
-                        transport.enqueue(pe);
+                        delivery.enqueue(pe);
                         let mut s = status.lock().unwrap();
                         s.events_enqueued_total += 1;
                         s.push_event_log(log_entry);
                     }
                 }
 
-                match transport.tick_result(
+                // Stamp the session envelope for the next batch; the worker
+                // owns batch pacing, posting and retry.
+                delivery.tick(
                     frame.session_time as f64,
                     frame.session_tick,
                     sub_session_id,
-                ) {
-                    Ok(true) => {
-                        let mut s = status.lock().unwrap();
-                        s.calls_total += 1;
-                        s.rc_connected = true;
-                        s.rc_last_http_status = Some(202);
-                        s.token_expires_at = transport.token_expires_at();
-                        s.last_post_at = Some(std::time::SystemTime::now());
-                        s.last_error_kind = None;
-                        s.queued_events = transport.queued_len();
-                    }
-                    Err(e) => {
-                        log_warn!("[transport] flush error: {e}");
-                        let mut s = status.lock().unwrap();
-                        s.calls_total += 1;
-                        s.calls_failed += 1;
-                        s.rc_connected = false;
-                        s.last_error_kind = Some(e.kind.label());
-                    }
-                    Ok(false) => {}
-                }
+                );
 
                 last_frame = Some(frame);
             }
@@ -738,13 +746,14 @@ pub fn run_pipeline(
             current_session_meta.as_ref(),
             (sub_session_id > 0).then_some(sub_session_id),
         );
-        transport.enqueue(pe);
+        delivery.enqueue(pe);
     }
 
-    log_info!("[publisher] PUBLISHER_GOODBYE sent — flushing...");
-    if let Err(e) = transport.flush(bye_t as f64, 0, sub_session_id) {
-        log_warn!("[publisher] flush error: {e}");
-        status.lock().unwrap().last_error_kind = Some(e.kind.label());
+    log_info!("[publisher] PUBLISHER_GOODBYE sent — draining outbox...");
+    delivery.shutdown(bye_t as f64, 0, sub_session_id);
+    {
+        let mut s = status.lock().unwrap();
+        copy_delivery_stats(&mut s, &delivery);
     }
     Ok(())
 }

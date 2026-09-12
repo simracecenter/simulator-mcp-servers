@@ -35,7 +35,12 @@ pub struct EngineSnapshot {
     pub last_error_kind: Option<String>,
     pub last_error: Option<String>,
     pub queued_events: usize,
+    pub outbox_pending_batches: usize,
     pub events_enqueued_total: u64,
+    pub events_delivered_total: u64,
+    pub events_rejected_total: u64,
+    pub events_duplicate_total: u64,
+    pub events_lost_total: u64,
     pub calls_total: u64,
     pub calls_failed: u64,
     pub started_at: Option<SystemTime>,
@@ -113,7 +118,12 @@ impl InProcessEngine {
                 snapshot.last_post_at = status.last_post_at;
                 snapshot.last_error_kind = status.last_error_kind.clone();
                 snapshot.queued_events = status.queued_events;
+                snapshot.outbox_pending_batches = status.outbox_pending_batches;
                 snapshot.events_enqueued_total = status.events_enqueued_total;
+                snapshot.events_delivered_total = status.events_delivered_total;
+                snapshot.events_rejected_total = status.events_rejected_total;
+                snapshot.events_duplicate_total = status.events_duplicate_total;
+                snapshot.events_lost_total = status.events_lost_total;
                 snapshot.calls_total = status.calls_total;
                 snapshot.calls_failed = status.calls_failed;
                 snapshot.state = if status.iracing_connected {

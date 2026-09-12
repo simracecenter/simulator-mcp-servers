@@ -5,6 +5,7 @@
 - Engineering issues:
   - https://github.com/simracecenter/simulator-mcp-servers/issues/57
   - https://github.com/simracecenter/simulator-mcp-servers/issues/59
+  - https://github.com/simracecenter/simulator-mcp-servers/issues/69
 
 ## Context
 
@@ -47,6 +48,32 @@ five-strike lockout, single-pairing conflict response, publisher-only grant
 scope, digest-only credential persistence, and unpair revocation protect the
 exception to ADR 0007's rule that credential issuance is a Rust API rather
 than an unauthenticated network endpoint.
+
+## Durable ingest delivery (2026-09-12 amendment)
+
+The original design queued events in memory on the 60 Hz sampling thread and
+performed HTTP POSTs, token refreshes, and retry sleeps inline on that loop.
+It also dropped the queue on failure and kept nothing across a process kill,
+so batches in flight at an abrupt exit were silently lost.
+
+The transport is now split. `PublisherTransport` performs one POST at a time
+and owns no buffer. A `DeliveryService` worker thread owns the transport and
+an on-disk `Outbox` under the publisher data directory. The sampling loop
+only pushes into a bounded in-memory queue (oldest event dropped and counted
+when full). The worker persists each batch to `outbox/batch-<seq>.json`
+before posting, deletes the file only after a 2xx acknowledgement, and
+re-delivers recovered files in order on the next start; the receiver
+deduplicates re-deliveries by event `id`. The outbox is bounded
+(`512` pending batches ≈ 10 000 events): at the bound the oldest file is
+dropped and counted, and a corrupt file is quarantined to `*.json.corrupt`
+rather than stalling later deliveries. `accepted`/`rejected`/`duplicate`
+receipt fields and `events_lost_total`/`outbox_pending_batches` are surfaced
+through `status.json` and the `publisher_status` MCP snapshot, so loss and
+backlog are visible to operators instead of silent.
+
+Shutdown persists whatever is still queued, then drains the outbox on a
+bounded best-effort pass (single-attempt posts, ~4 s budget); unacknowledged
+files wait for the next launch.
 
 ## Limits
 
