@@ -68,9 +68,20 @@ impl SessionRegistry {
     }
 
     /// Claims the session's server-to-client stream for an SSE response.
+    ///
+    /// If the previous stream's receiver was dropped — the SSE connection
+    /// died without a `DELETE /mcp` (client crash, network cut) — the channel
+    /// is rebuilt so the client can re-establish its event stream instead of
+    /// being refused `409 AlreadyStreaming` until process restart.
     pub fn take_stream(&self, id: &str) -> Result<mpsc::Receiver<Value>, StreamError> {
         let mut sessions = self.sessions.lock().expect("session registry");
         let session = sessions.get_mut(id).ok_or(StreamError::UnknownSession)?;
+        if session.receiver.is_none() && session.sender.is_closed() {
+            // The old stream is gone for good; swap in a fresh channel.
+            let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
+            session.sender = sender;
+            session.receiver = Some(receiver);
+        }
         session.receiver.take().ok_or(StreamError::AlreadyStreaming)
     }
 
@@ -138,11 +149,47 @@ mod tests {
         let registry = SessionRegistry::new();
         let id = registry.create();
 
-        assert!(registry.take_stream(&id).is_ok());
+        // The first stream must still be open for the refusal to hold; once
+        // its receiver drops the session is allowed to re-stream.
+        let _open_stream = registry.take_stream(&id).expect("first stream");
         assert_eq!(
             registry.take_stream(&id).unwrap_err(),
             StreamError::AlreadyStreaming
         );
+    }
+
+    #[test]
+    fn a_session_whose_stream_died_can_restream() {
+        let registry = SessionRegistry::new();
+        let id = registry.create();
+
+        // First stream opens, then dies without DELETE /mcp (client crash).
+        let stream = registry.take_stream(&id).expect("first stream");
+        drop(stream);
+        assert!(registry.sender(&id).expect("sender").is_closed());
+
+        // The session is orphaned; a new GET /mcp must not hit 409 forever.
+        let restreamed = registry.take_stream(&id).expect("re-stream after loss");
+        drop(restreamed);
+    }
+
+    #[tokio::test]
+    async fn messages_flow_on_the_replacement_channel() {
+        let registry = SessionRegistry::new();
+        let id = registry.create();
+
+        drop(registry.take_stream(&id).expect("first stream"));
+        let mut restreamed = registry.take_stream(&id).expect("re-stream");
+
+        registry
+            .sender(&id)
+            .expect("sender")
+            .send(json!({"method": "notifications/message"}))
+            .await
+            .expect("send");
+
+        let message = restreamed.recv().await.expect("message");
+        assert_eq!(message["method"], "notifications/message");
     }
 
     #[test]
