@@ -1,4 +1,5 @@
 mod config;
+mod logging;
 mod pair_server;
 mod pairing;
 mod runner;
@@ -85,9 +86,19 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Persistent rotated log file next to the config so a later wedge leaves
+    // a trail — stderr alone is lost for a tray/headless install. The guard
+    // must outlive the process or buffered lines are dropped.
+    let _log_guard = match logging::init() {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("launcher: file logging unavailable, stderr only: {error}");
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .init();
+            None
+        }
+    };
 
     let cli = Cli::parse();
 
@@ -157,12 +168,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("received shutdown signal");
             }
         }
-        Ok(())
     } else {
         let tray = ui::tray::build(settings_url)?;
         tray.run()?;
-        Ok(())
     }
+    info!("launcher exiting");
+    Ok(())
 }
 
 #[cfg(test)]

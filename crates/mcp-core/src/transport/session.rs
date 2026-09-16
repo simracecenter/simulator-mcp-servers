@@ -78,6 +78,7 @@ impl SessionRegistry {
         let session = sessions.get_mut(id).ok_or(StreamError::UnknownSession)?;
         if session.receiver.is_none() && session.sender.is_closed() {
             // The old stream is gone for good; swap in a fresh channel.
+            tracing::info!(session_id = %id, "rebuilding dead event-stream channel");
             let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
             session.sender = sender;
             session.receiver = Some(receiver);

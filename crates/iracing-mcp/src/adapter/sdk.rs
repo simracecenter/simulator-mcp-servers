@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(windows)]
 use iracing_broadcast::{BroadcastMessage, Client as BroadcastClient};
@@ -2102,6 +2102,7 @@ fn sampler_loop() {
         if connection.is_none() {
             match SdkConnection::new() {
                 Ok(new_connection) => {
+                    info!("iRacing telemetry sampler connected");
                     connection = Some(new_connection);
                 }
                 Err(error) => {
@@ -2118,7 +2119,7 @@ fn sampler_loop() {
 
         let sdk = connection.as_ref().expect("sampler connection exists");
         if let Err(error) = sdk.ensure_connected() {
-            debug!(%error, "iRacing telemetry sampler detected disconnect");
+            info!(%error, "iRacing telemetry sampler detected disconnect");
             connection = None;
             session_document = None;
             if revision.connected {

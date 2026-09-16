@@ -15,6 +15,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tracing::{info, warn};
 
 use crate::jsonrpc::{JsonRpcRequest, JsonRpcResponse, McpHandler};
 use crate::transport::session::{SessionRegistry, StreamError};
@@ -111,8 +112,10 @@ async fn handle_request<H: McpHandler>(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(session) = session_id(&headers) {
-        if !state.sessions.contains(&session) {
+    let session = session_id(&headers);
+    if let Some(session) = session.as_deref() {
+        if !state.sessions.contains(session) {
+            warn!(session, "POST /mcp refused: unknown session");
             return unknown_session();
         }
     }
@@ -120,12 +123,13 @@ async fn handle_request<H: McpHandler>(
     let request = match serde_json::from_slice::<JsonRpcRequest>(&body) {
         Ok(request) => request,
         Err(error) => {
+            warn!(%error, "POST /mcp parse error");
             return Json(JsonRpcResponse::err(
                 None,
                 -32700,
                 format!("parse error: {error}"),
             ))
-            .into_response()
+            .into_response();
         }
     };
 
@@ -134,11 +138,13 @@ async fn handle_request<H: McpHandler>(
         return StatusCode::ACCEPTED.into_response();
     }
 
+    info!(session = ?session, method = %request.method, "mcp request");
     let issue_session = request.method == "initialize";
     let response = Json(state.handler.handle(request).await);
 
     if issue_session {
         let session = state.sessions.create();
+        info!(%session, "session created");
         return ([(SESSION_HEADER, session)], response).into_response();
     }
 
@@ -168,16 +174,21 @@ async fn open_stream<H: McpHandler>(
 
     let receiver = match state.sessions.take_stream(&session) {
         Ok(receiver) => receiver,
-        Err(StreamError::UnknownSession) => return unknown_session(),
+        Err(StreamError::UnknownSession) => {
+            warn!(%session, "GET /mcp refused: unknown session");
+            return unknown_session();
+        }
         Err(StreamError::AlreadyStreaming) => {
+            warn!(%session, "GET /mcp refused: session already streaming");
             return (
                 StatusCode::CONFLICT,
                 "session already has an open event stream",
             )
-                .into_response()
+                .into_response();
         }
     };
 
+    info!(%session, "event stream opened");
     let events = ReceiverStream::new(receiver).map(|message| {
         Ok::<Event, Infallible>(Event::default().event("message").data(message.to_string()))
     });
@@ -195,8 +206,14 @@ async fn close_session<H: McpHandler>(
     headers: HeaderMap,
 ) -> Response {
     match session_id(&headers) {
-        Some(session) if state.sessions.remove(&session) => StatusCode::NO_CONTENT.into_response(),
-        _ => unknown_session(),
+        Some(session) if state.sessions.remove(&session) => {
+            info!(%session, "session closed");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        _ => {
+            warn!("DELETE /mcp refused: unknown session");
+            unknown_session()
+        }
     }
 }
 
