@@ -87,7 +87,9 @@ async fn pair(State(pairing): State<Arc<PairingState>>, request: Request<Body>) 
         Err(PairError::InvalidCode) => {
             error_response(StatusCode::FORBIDDEN, "invalid_pairing_code")
         }
-        Err(PairError::AlreadyPaired) => error_response(StatusCode::CONFLICT, "already_paired"),
+        Err(PairError::InvalidDirector) => {
+            error_response(StatusCode::UNPROCESSABLE_ENTITY, "schema")
+        }
         Err(PairError::RateLimited { retry_after_secs }) => (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, retry_after_secs.to_string())],
@@ -139,21 +141,25 @@ mod tests {
         )
     }
 
-    fn pair_request(code: &str) -> Request<Body> {
+    fn pair_request_for(code: &str, name: &str, fingerprint: &str) -> Request<Body> {
         Request::post("/pair")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
                 json!({
                     "pairingCode": code,
                     "director": {
-                        "name": "Director",
+                        "name": name,
                         "ingestUrl": "https://director.example/ingest",
-                        "ingestFingerprint": "AA:BB"
+                        "ingestFingerprint": fingerprint
                     }
                 })
                 .to_string(),
             ))
             .unwrap()
+    }
+
+    fn pair_request(code: &str) -> Request<Body> {
+        pair_request_for(code, "Director", &"aa".repeat(32))
     }
 
     #[tokio::test]
@@ -195,6 +201,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(authorized.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn multiple_directors_receive_independent_credentials() {
+        let (app, pairing) = setup();
+        let director_a_fingerprint = "aa".repeat(32);
+        let director_b_fingerprint = "bb".repeat(32);
+        let first = app
+            .clone()
+            .oneshot(pair_request_for(
+                &pairing.pairing_code(),
+                "Director A",
+                &director_a_fingerprint,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first: serde_json::Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let first_credential = first["credential"].as_str().unwrap().to_string();
+
+        let second = app
+            .clone()
+            .oneshot(pair_request_for(
+                &pairing.pairing_code(),
+                "Director B",
+                &director_b_fingerprint,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second: serde_json::Value =
+            serde_json::from_slice(&second.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let second_credential = second["credential"].as_str().unwrap().to_string();
+
+        assert_eq!(pairing.director_names(), vec!["Director A", "Director B"]);
+        let replacement = app
+            .clone()
+            .oneshot(pair_request_for(
+                &pairing.pairing_code(),
+                "Director A",
+                &director_a_fingerprint,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replacement.status(), StatusCode::OK);
+        let replacement: serde_json::Value =
+            serde_json::from_slice(&replacement.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let replacement_credential = replacement["credential"].as_str().unwrap().to_string();
+        assert_eq!(pairing.director_names(), vec!["Director B", "Director A"]);
+
+        for (credential, expected) in [
+            (first_credential, StatusCode::UNAUTHORIZED),
+            (second_credential, StatusCode::OK),
+            (replacement_credential, StatusCode::OK),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/mcp")
+                        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                        .body(Body::from(
+                            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
     }
 
     #[tokio::test]
@@ -287,7 +365,7 @@ mod tests {
                     director: crate::pairing::DirectorInfo {
                         name: "Director".to_string(),
                         ingest_url: "https://director.example/ingest".to_string(),
-                        ingest_fingerprint: "AA:BB".to_string(),
+                        ingest_fingerprint: "aa".repeat(32),
                     },
                 })
                 .unwrap();

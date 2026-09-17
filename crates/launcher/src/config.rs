@@ -32,8 +32,22 @@ pub struct LauncherConfig {
     pub publisher: publisher_mcp::PublisherConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairings: Vec<PairingRecord>,
+    #[serde(default, skip_serializing)]
     pub pairing: Option<PairingRecord>,
+}
+
+impl LauncherConfig {
+    pub fn migrate_pairings(&mut self) {
+        if self.pairings.is_empty() {
+            if let Some(pairing) = self.pairing.take() {
+                self.pairings.push(pairing);
+            }
+        } else {
+            self.pairing = None;
+        }
+    }
 }
 
 impl Default for LauncherConfig {
@@ -42,6 +56,7 @@ impl Default for LauncherConfig {
             active_sim: Sim::Iracing,
             publisher: publisher_mcp::PublisherConfig::default(),
             device_id: None,
+            pairings: Vec::new(),
             pairing: None,
         }
     }
@@ -63,7 +78,9 @@ pub fn config_dir() -> PathBuf {
 }
 
 pub fn load() -> Result<LauncherConfig, mcp_core::config::ConfigError> {
-    mcp_core::config::load_or_default(&config_path())
+    let mut config: LauncherConfig = mcp_core::config::load_or_default(&config_path())?;
+    config.migrate_pairings();
+    Ok(config)
 }
 
 // Used by the tray UI's settings window and the settings HTTP server (ADR 0001 D4).
@@ -139,19 +156,20 @@ mod tests {
         let config = LauncherConfig {
             active_sim: Sim::Publisher,
             device_id: Some(device_id),
-            pairing: Some(PairingRecord {
+            pairings: vec![PairingRecord {
                 credential_id: Uuid::new_v4(),
                 credential_sha256: "ab".repeat(32),
                 director_name: "Director".to_string(),
+                director_fingerprint: "AA:BB".to_string(),
                 paired_at: "123".to_string(),
-            }),
+            }],
             ..LauncherConfig::default()
         };
         save(&config).unwrap();
         let loaded = load().unwrap();
         assert_eq!(loaded.active_sim, Sim::Publisher);
         assert_eq!(loaded.device_id, Some(device_id));
-        assert_eq!(loaded.pairing, config.pairing);
+        assert_eq!(loaded.pairings, config.pairings);
 
         std::fs::remove_dir_all(&appdata).ok();
         std::env::remove_var("APPDATA");
@@ -200,6 +218,30 @@ mod tests {
         let config: LauncherConfig = mcp_core::config::load_or_default(&path).unwrap();
         assert_eq!(config.active_sim, Sim::Publisher);
         assert_eq!(config.publisher, publisher_mcp::PublisherConfig::default());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn legacy_single_pairing_migrates_into_pairings() {
+        let path = std::env::temp_dir().join(format!(
+            "simracecenter-launcher-pairing-migration-test-{}.toml",
+            std::process::id()
+        ));
+        let credential_id = Uuid::new_v4();
+        std::fs::write(
+            &path,
+            format!(
+                "active_sim = \"publisher\"\n\n[pairing]\ncredential_id = \"{credential_id}\"\ncredential_sha256 = \"{}\"\ndirector_name = \"Legacy Director\"\npaired_at = \"123\"\n",
+                "ab".repeat(32)
+            ),
+        )
+        .unwrap();
+        let mut config: LauncherConfig = mcp_core::config::load_or_default(&path).unwrap();
+        config.migrate_pairings();
+        assert_eq!(config.pairings.len(), 1);
+        assert_eq!(config.pairings[0].director_name, "Legacy Director");
+        assert!(config.pairings[0].director_fingerprint.is_empty());
+        assert!(config.pairing.is_none());
         std::fs::remove_file(path).ok();
     }
 }

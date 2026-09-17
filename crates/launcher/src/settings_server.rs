@@ -70,6 +70,7 @@ struct Status {
     pairing_code: Option<String>,
     paired: bool,
     director_name: Option<String>,
+    director_names: Vec<String>,
     cert_fingerprint: Option<String>,
     device_id: Option<String>,
 }
@@ -154,21 +155,19 @@ async fn api_unpair(
 async fn build_status(handler: &SwappableHandler, sim: Sim, pairing: &PairingState) -> Status {
     let connected = get_connected(handler, sim).await;
     let tool_names = get_tool_names(handler).await;
-    let (pairing_code, paired, director_name, cert_fingerprint, device_id) =
+    let (pairing_code, paired, director_name, director_names, cert_fingerprint, device_id) =
         if sim == Sim::Publisher {
-            let config = config::load().ok();
+            let director_names = pairing.director_names();
             (
                 Some(pairing.pairing_code()),
-                pairing.is_paired(),
-                config
-                    .as_ref()
-                    .and_then(|config| config.pairing.as_ref())
-                    .map(|pairing| pairing.director_name.clone()),
+                !director_names.is_empty(),
+                director_names.first().cloned(),
+                director_names,
                 Some(pairing.fingerprint().to_string()),
                 pairing.device_id().map(|id| id.to_string()),
             )
         } else {
-            (None, false, None, None, None)
+            (None, false, None, Vec::new(), None, None)
         };
     Status {
         sim: sim.to_string(),
@@ -177,6 +176,7 @@ async fn build_status(handler: &SwappableHandler, sim: Sim, pairing: &PairingSta
         pairing_code,
         paired,
         director_name,
+        director_names,
         cert_fingerprint,
         device_id,
     }

@@ -6,6 +6,7 @@
   - https://github.com/simracecenter/simulator-mcp-servers/issues/57
   - https://github.com/simracecenter/simulator-mcp-servers/issues/59
   - https://github.com/simracecenter/simulator-mcp-servers/issues/69
+  - https://github.com/simracecenter/simulator-mcp-servers/issues/75
 
 ## Context
 
@@ -42,12 +43,19 @@ The Director pairing contract is defined by
 [`docs/12-rig-pairing.md`](https://github.com/simracecenter/director/blob/main/docs/12-rig-pairing.md).
 The publisher listener serves HTTPS with a self-signed certificate persisted
 per Rig, and Director performs TOFU by pinning the certificate fingerprint
-supplied during pairing (see Director ADR 0014). `POST /pair` mints one
-persistent credential after validating the one-shot three-digit code. The
-five-strike lockout, single-pairing conflict response, publisher-only grant
-scope, digest-only credential persistence, and unpair revocation protect the
-exception to ADR 0007's rule that credential issuance is a Rust API rather
-than an unauthenticated network endpoint.
+supplied during pairing (see Director ADR 0014). `POST /pair` mints a
+persistent credential after validating the one-shot three-digit code. A Rig
+may retain independently revocable grants for multiple Directors, identified
+by their normalized ingest certificate fingerprints. Re-pairing the same
+Director replaces its previous grant; the local Clear Directors action revokes
+all grants. Pairing establishes trust only: the Director that sends
+`publisher_start` first sends `publisher_configure` with its own ingest
+destination. Grants remain in launcher configuration while another exclusive
+role is active, so returning the Rig to `publisher` does not require pairing
+again. The five-strike lockout, publisher-only grant scope, digest-only
+credential persistence, and revocation protect the exception to ADR 0007's
+rule that credential issuance is a Rust API rather than an unauthenticated
+network endpoint.
 
 ## Durable ingest delivery (2026-09-12 amendment)
 
