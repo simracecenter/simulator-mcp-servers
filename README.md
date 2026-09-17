@@ -25,10 +25,10 @@ Status: **early development**. Learn more about the product at
 [docs/adr](docs/adr/) (start with [ADR 0001](docs/adr/0001-project-layout.md)) and the
 [project board](https://github.com/orgs/simracecenter/projects/1).
 
-Trusted companion integration has an opt-in protected HTTP router in `mcp-core`;
-see [proposed ADR 0007](docs/adr/0007-protected-http-transport.md) for its contract
-and remaining TLS/pairing gates. The launcher does not enable it yet, and its
-existing network defaults remain unchanged.
+Trusted companion integration uses the protected HTTP router in `mcp-core`;
+see [ADR 0007](docs/adr/0007-protected-http-transport.md). The publisher role
+enables it with HTTPS, pairing codes, certificate pinning, and scoped bearer
+credentials. Simulator-role network defaults remain unchanged.
 
 ## What's Here
 
@@ -105,7 +105,11 @@ That default trades same-machine-only exposure for LAN reachability for simulato
 transport is **unauthenticated** — anything that can reach it can invoke any tool. Run those roles
 only on a trusted network segment and **never port-forward them to the internet** (see
 [SECURITY.md](SECURITY.md)). The publisher role instead serves an HTTPS protected router and
-requires pairing before MCP access. To restrict the server to the Rig itself, launch with
+requires pairing before MCP access. A publisher can trust multiple Directors
+without discarding existing grants; the Director issuing Start configures its
+own ingest destination first. Those grants remain stored while the launcher
+switches to a simulator role, so returning to publisher does not require
+pairing again. To restrict the server to the Rig itself, launch with
 `--bind 127.0.0.1:8765`, or use `--transport stdio` when an MCP client spawns the server as a local
 child process.
 

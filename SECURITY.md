@@ -30,7 +30,9 @@ We'll acknowledge reports as quickly as we can and keep you updated as a fix is 
   unreachable by the agent that needs it. Simulator-role transports are **unauthenticated**, so
   treat "on the network" as "able to invoke every tool": run them only on a trusted network
   interface/segment and never port-forward them to the internet. The publisher role uses an HTTPS
-  protected router with one-shot pairing and scoped bearer credentials. To restrict the server to
+  protected router with one-shot pairing and a scoped bearer credential for each paired Director.
+  Multiple Directors may be trusted concurrently; re-pairing one Director replaces only that
+  Director's grant, while the local Clear Directors action revokes every stored grant. To restrict the server to
   same-machine clients, launch with a loopback bind
   (`--bind 127.0.0.1:8765`) or use `--transport stdio`. The launcher logs a warning at startup when
   the MCP transport is bound to a non-loopback address.
@@ -48,13 +50,10 @@ It authenticates requests before body parsing, scopes tool calls to explicit
 allowlists, and binds sessions to an expiring, revocable credential. All routes,
 including `/healthz`, require a credential. Browser Origin headers are rejected.
 
-This API is **not wired into the launcher** and does not change the defaults
-above. It is not a complete pairing or remote-management solution. The caller
-must provide authenticated TLS before off-host use; bearer credentials must never
-be sent over off-host plaintext HTTP. Persistent Windows identity/secret storage,
-GUI pairing, session quotas/cleanup, and termination of existing SSE streams on
-revocation remain integration gates. Revocation rejects new requests but does not
-cancel in-flight simulator actions. Mutation leases and fencing are still needed.
+The launcher wires this API into its publisher role with persistent Rig identity,
+TLS certificate pinning, pairing-code rate limits, and digest-only credential
+storage. Simulator roles retain their existing trusted-LAN defaults. Revocation
+rejects new requests but does not cancel in-flight publisher actions.
 
 If you believe any of these assumptions are insufficient for your deployment, please open an issue
 (non-sensitive) or a private report (sensitive) so we can track hardening work.

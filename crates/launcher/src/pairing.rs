@@ -25,6 +25,8 @@ pub struct PairingRecord {
     pub credential_id: Uuid,
     pub credential_sha256: String,
     pub director_name: String,
+    #[serde(default)]
+    pub director_fingerprint: String,
     pub paired_at: String,
 }
 
@@ -96,7 +98,7 @@ pub struct PairResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairError {
     InvalidCode,
-    AlreadyPaired,
+    InvalidDirector,
     RateLimited { retry_after_secs: u64 },
     Internal(String),
 }
@@ -123,11 +125,16 @@ impl PairingState {
         fingerprint: String,
     ) -> Result<Self, String> {
         let mut config = store.load()?;
-        if config.device_id.is_none() {
+        let needs_migration = config.pairing.is_some();
+        config.migrate_pairings();
+        let needs_device_id = config.device_id.is_none();
+        if needs_device_id {
             config.device_id = Some(Uuid::new_v4());
+        }
+        if needs_migration || needs_device_id {
             store.save(&config)?;
         }
-        if let Some(pairing) = &config.pairing {
+        for pairing in &config.pairings {
             let digest = decode_digest(&pairing.credential_sha256)?;
             credentials
                 .restore(
@@ -154,11 +161,18 @@ impl PairingState {
         self.code.lock().expect("pairing code").clone()
     }
 
-    pub fn is_paired(&self) -> bool {
+    pub fn director_names(&self) -> Vec<String> {
         self.store
             .load()
-            .map(|config| config.pairing.is_some())
-            .unwrap_or(false)
+            .map(|mut config| {
+                config.migrate_pairings();
+                config
+                    .pairings
+                    .into_iter()
+                    .map(|pairing| pairing.director_name)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn device_id(&self) -> Option<Uuid> {
@@ -191,13 +205,14 @@ impl PairingState {
         }
 
         let mut config = self.store.load().map_err(PairError::Internal)?;
-        if config.pairing.is_some() {
-            return Err(PairError::AlreadyPaired);
-        }
+        config.migrate_pairings();
         if request.pairing_code != self.pairing_code() {
             let mut strikes = self.strikes.lock().expect("pairing strikes");
             strikes.count = strikes.count.saturating_add(1);
             return Err(PairError::InvalidCode);
+        }
+        if !request.director.ingest_url.starts_with("https://") {
+            return Err(PairError::InvalidDirector);
         }
 
         let credential = self
@@ -206,18 +221,34 @@ impl PairingState {
             .map_err(|error| PairError::Internal(error.to_string()))?;
         let fingerprint =
             publisher::config::normalise_fingerprint(&request.director.ingest_fingerprint)
-                .unwrap_or_else(|_| request.director.ingest_fingerprint.trim().to_string());
-        config.publisher.ingest_url = Some(request.director.ingest_url);
-        config.publisher.cert_fingerprint = Some(fingerprint);
-        config.pairing = Some(PairingRecord {
+                .map_err(|_| PairError::InvalidDirector)?;
+        let replaced = config
+            .pairings
+            .iter()
+            .find(|pairing| {
+                pairing.director_fingerprint == fingerprint
+                    || (pairing.director_fingerprint.is_empty()
+                        && pairing.director_name == request.director.name)
+            })
+            .cloned();
+        config.pairings.retain(|pairing| {
+            pairing.director_fingerprint != fingerprint
+                && (!pairing.director_fingerprint.is_empty()
+                    || pairing.director_name != request.director.name)
+        });
+        config.pairings.push(PairingRecord {
             credential_id: credential.id(),
             credential_sha256: hex_digest(credential.digest()),
             director_name: request.director.name,
+            director_fingerprint: fingerprint,
             paired_at: format!("{}", unix_timestamp()),
         });
         if let Err(error) = self.store.save(&config) {
             self.credentials.revoke(credential.id());
             return Err(PairError::Internal(error));
+        }
+        if let Some(replaced) = replaced {
+            self.credentials.revoke(replaced.credential_id);
         }
         *self.strikes.lock().expect("pairing strikes") = Strikes {
             count: 0,
@@ -236,9 +267,18 @@ impl PairingState {
 
     pub fn unpair(&self) -> Result<(), String> {
         let mut config = self.store.load()?;
-        if let Some(pairing) = config.pairing.take() {
-            self.credentials.revoke(pairing.credential_id);
+        config.migrate_pairings();
+        if !config.pairings.is_empty() {
+            let credential_ids = config
+                .pairings
+                .iter()
+                .map(|pairing| pairing.credential_id)
+                .collect::<Vec<_>>();
+            config.pairings.clear();
             self.store.save(&config)?;
+            for credential_id in credential_ids {
+                self.credentials.revoke(credential_id);
+            }
         }
         rotate_code(&self.code);
         Ok(())
@@ -303,7 +343,7 @@ mod tests {
             director: DirectorInfo {
                 name: "Director".to_string(),
                 ingest_url: "https://director.example/ingest".to_string(),
-                ingest_fingerprint: "not-a-fingerprint".to_string(),
+                ingest_fingerprint: "aa".repeat(32),
             },
         }
     }
@@ -318,11 +358,57 @@ mod tests {
         assert_eq!(response.display_name, "rig1");
         let new_code = pairing.pairing_code();
         assert_ne!(new_code, old_code);
-        assert!(pairing.is_paired());
+        assert!(!pairing.director_names().is_empty());
+        assert_eq!(store.config().pairings.len(), 1);
+        assert_eq!(pairing.director_names(), vec!["Director"]);
+        assert_eq!(store.config().publisher.ingest_url, None);
+    }
+
+    #[test]
+    fn pairing_another_director_preserves_the_existing_grant() {
+        let store = Arc::new(InMemoryPairingStore::new(LauncherConfig::default()));
+        let credentials = Arc::new(CredentialRegistry::new());
+        let pairing = state(store.clone(), credentials);
+        pairing.pair(request(pairing.pairing_code())).unwrap();
+        let mut second = request(pairing.pairing_code());
+        second.director.name = "Backup Director".to_string();
+        second.director.ingest_fingerprint = "bb".repeat(32);
+        pairing.pair(second).unwrap();
+        assert_eq!(store.config().pairings.len(), 2);
         assert_eq!(
-            store.config().publisher.ingest_url.as_deref(),
-            Some("https://director.example/ingest")
+            pairing.director_names(),
+            vec!["Director", "Backup Director"]
         );
+    }
+
+    #[test]
+    fn pairing_the_same_director_replaces_its_previous_grant() {
+        let store = Arc::new(InMemoryPairingStore::new(LauncherConfig::default()));
+        let credentials = Arc::new(CredentialRegistry::new());
+        let pairing = state(store.clone(), credentials);
+        let first = pairing.pair(request(pairing.pairing_code())).unwrap();
+        let second = pairing.pair(request(pairing.pairing_code())).unwrap();
+        assert_ne!(first.credential, second.credential);
+        assert_eq!(store.config().pairings.len(), 1);
+    }
+
+    #[test]
+    fn startup_persists_legacy_pairing_migration() {
+        let legacy = PairingRecord {
+            credential_id: Uuid::new_v4(),
+            credential_sha256: "ab".repeat(32),
+            director_name: "Legacy Director".to_string(),
+            director_fingerprint: String::new(),
+            paired_at: "123".to_string(),
+        };
+        let store = Arc::new(InMemoryPairingStore::new(LauncherConfig {
+            device_id: Some(Uuid::new_v4()),
+            pairing: Some(legacy.clone()),
+            ..LauncherConfig::default()
+        }));
+        state(store.clone(), Arc::new(CredentialRegistry::new()));
+        assert_eq!(store.config().pairings, vec![legacy]);
+        assert!(store.config().pairing.is_none());
     }
 
     #[test]
@@ -333,9 +419,10 @@ mod tests {
         let response = pairing.pair(request(pairing.pairing_code())).unwrap();
         let restored_credentials = Arc::new(CredentialRegistry::new());
         let restored = state(store.clone(), restored_credentials.clone());
-        assert!(restored.is_paired());
+        assert!(!restored.director_names().is_empty());
         restored.unpair().unwrap();
-        assert!(!restored.is_paired());
+        assert!(restored.director_names().is_empty());
+        assert!(store.config().pairings.is_empty());
         assert_eq!(response.credential.len(), 64);
         assert!(credentials.issue_persistent(["publisher_status"]).is_ok());
     }
