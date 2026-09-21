@@ -198,11 +198,13 @@ impl adapter::IracingAdapter for ScriptedAdapter {
         Ok(())
     }
 
+    /// Mirrors the sim: focus car and camera group apply, the camera number
+    /// does not (iRacing picks the shot within the group itself).
     async fn camera_focus(
         &self,
         car_idx: i32,
         group_number: Option<i32>,
-        camera_number: Option<i32>,
+        _camera_number: Option<i32>,
     ) -> Result<(), adapter::AdapterError> {
         self.activate_script("camera_focus");
 
@@ -211,9 +213,6 @@ impl adapter::IracingAdapter for ScriptedAdapter {
             inner.current.cam_car_idx = car_idx;
             if let Some(group_number) = group_number {
                 inner.current.cam_group_number = group_number;
-            }
-            if let Some(camera_number) = camera_number {
-                inner.current.cam_camera_number = camera_number;
             }
         }
         Ok(())
@@ -588,7 +587,7 @@ async fn replay_commands_return_wrong_mode_when_in_car() {
 }
 
 #[tokio::test]
-async fn camera_focus_verifies_car_target_even_if_camera_slot_changes() {
+async fn camera_focus_verifies_without_the_requested_camera_number() {
     let initial = base_replay_state();
     let adapter: Arc<dyn adapter::IracingAdapter> = Arc::new(ScriptedAdapter::new(initial));
     let app = build_app(adapter);
@@ -607,6 +606,31 @@ async fn camera_focus_verifies_car_target_even_if_camera_slot_changes() {
     assert_eq!(payload["ok"], Value::Bool(true));
     assert_eq!(payload["data"]["verified"], Value::Bool(true));
     assert_eq!(payload["data"]["observed"]["camCarIdx"], Value::from(7));
+    assert_eq!(
+        payload["data"]["observed"]["camGroupNumber"],
+        Value::from(3)
+    );
+    assert_eq!(
+        payload["data"]["observed"]["camCameraNumber"],
+        Value::from(0)
+    );
+    assert_eq!(
+        payload["data"]["verifiedFields"],
+        json!(["camCarIdx", "camGroupNumber"])
+    );
+    assert!(payload["data"]["cameraNumberAdvisory"].is_string());
+}
+
+#[tokio::test]
+async fn camera_focus_without_group_verifies_car_only() {
+    let initial = base_replay_state();
+    let adapter: Arc<dyn adapter::IracingAdapter> = Arc::new(ScriptedAdapter::new(initial));
+    let app = build_app(adapter);
+
+    let payload = call_tool_payload(app, "camera_focus", json!({ "carIdx": 7 })).await;
+
+    assert_eq!(payload["ok"], Value::Bool(true));
+    assert_eq!(payload["data"]["verifiedFields"], json!(["camCarIdx"]));
 }
 
 #[tokio::test]

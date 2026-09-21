@@ -185,11 +185,13 @@ impl IracingAdapter for StubAdapter {
         Ok(())
     }
 
+    /// Mirrors the sim: focus car and camera group apply, the camera number
+    /// does not (iRacing picks the shot within the group itself).
     async fn camera_focus(
         &self,
         car_idx: i32,
         group_number: Option<i32>,
-        camera_number: Option<i32>,
+        _camera_number: Option<i32>,
     ) -> Result<(), AdapterError> {
         if car_idx < 0 {
             return Err(AdapterError::InvalidArgument(
@@ -200,9 +202,6 @@ impl IracingAdapter for StubAdapter {
         s.cam_car_idx = car_idx;
         if let Some(g) = group_number {
             s.cam_group_number = g;
-        }
-        if let Some(c) = camera_number {
-            s.cam_camera_number = c;
         }
         Ok(())
     }

@@ -1083,6 +1083,12 @@ impl SdkAdapter {
         result
     }
 
+    /// Sends `CamSwitchNum` (driver number, group, camera).
+    ///
+    /// The sim acts on the focus car and the camera group; the camera argument
+    /// is advisory — iRacing's shot-range/auto-shot director picks the shot
+    /// within the group. An omitted `camera_number` is sent as `0` rather than
+    /// the currently active camera, so nothing is pinned.
     fn camera_focus_sync(
         &self,
         car_idx: i32,
@@ -1103,7 +1109,7 @@ impl SdkAdapter {
         }
         let replay_state = replay_state_from_snapshot(&snapshot)?;
         let group_number = group_number.unwrap_or(replay_state.cam_group_number);
-        let camera_number = camera_number.unwrap_or(replay_state.cam_camera_number);
+        let camera_number = camera_number.unwrap_or(0);
         let car_number = find_car_number_for_car_idx(&snapshot.session_document, car_idx)?;
         let padded_car_number = i32::from(pad_car_number(&car_number));
 

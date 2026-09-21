@@ -72,7 +72,7 @@ telemetry. Require being out of the car (see [Mode guard](#mode-guard)).
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
-| `camera_focus` | `carIdx` (int, required), `groupNumber?`, `cameraNumber?` (int or null) | Switches the active camera to a target car, optionally also switching group/camera. Verifies whichever of car/group/camera were actually requested. |
+| `camera_focus` | `carIdx` (int, required), `groupNumber?`, `cameraNumber?` (int or null) | Switches the active camera to a target car, optionally also switching the camera group. Verifies the focus car plus the group when one was requested (listed in `verifiedFields`). `cameraNumber` is forwarded but **not** verified — see [Known limitations](#known-limitations-worth-carrying-into-new-adapters). |
 | `camera_set_state` | `camToolActive?`, `uiHidden?`, `useAutoShotSelection?`, `useTemporaryEdits?`, `useKeyAcceleration?`, `useKey10xAcceleration?`, `useMouseAimMode?` (all bool) | Sets camera-tool UI state bits (e.g. hide UI chrome for a clean broadcast shot) and verifies the resulting `CamCameraState` bitmask. |
 
 ### Replay tools
@@ -266,6 +266,18 @@ misconfiguration could accidentally trigger outside of tests.
   delivers live (a hardcoded ±100ms missed by 120-170ms in practice; widened to ±300ms). Anything
   with a "verify within N ms/frames" contract should be validated against a live sim, not just a
   stub, before shipping a default.
+- **`CamSwitchNum`'s camera argument does not pin a camera.** iRacing acts on the focus car and
+  the camera group; the shot *within* a group is chosen by the sim (its Shot Range mechanism, plus
+  `UseAutoShotSelection` = `0x0010` in `CamCameraState`, which overrides a camera passed in a switch
+  broadcast). `camera_focus` therefore verifies car + group only, reports which fields
+  it checked in `verifiedFields`, and leaves `camCameraNumber`/`camCameraState` in `observed` for
+  callers to read. Verifying the camera number produced spurious `timeout` errors on commands the
+  sim had actually accepted. Sources: iRacing's
+  [Camera Tool doc](https://support.iracing.com/support/solutions/articles/31000157467-iracing-camera-tool)
+  (groups, Shot Range, Shot Selection) and hardware-verified third-party findings
+  ([iracedeck#852](https://github.com/niklam/iracedeck/issues/852),
+  [iracedeck#971](https://github.com/niklam/iracedeck/pull/971),
+  [iracedeck#965](https://github.com/niklam/iracedeck/issues/965)).
 - **Not every SDK-reported speed/mode is guaranteed to be honored.** `replay_set_playback` verifies
   cleanly for speeds `0`/`1`/`2` but was observed timing out for `3`/`4`/`8` in one live replay
   session — confirmed (by polling well past the timeout) that the sim genuinely never reached those

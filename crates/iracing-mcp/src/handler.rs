@@ -281,7 +281,7 @@ fn tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "camera_focus",
-            "description": "Focuses the active camera on a target car and optionally switches group/camera with telemetry verification.",
+            "description": "Focuses the active camera on a target car and optionally switches the camera group, verified against telemetry. cameraNumber is forwarded to iRacing but never verified: the sim's shot-range/auto-shot director owns the shot within a group — read observed.camCameraNumber and observed.camCameraState instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -620,6 +620,14 @@ impl IracingMcpHandler {
         )
     }
 
+    /// Verifies the focus car and, when requested, the camera group.
+    ///
+    /// `cameraNumber` is deliberately not part of the predicate: iRacing's
+    /// director selects the shot within a group (shot range, and
+    /// `UseAutoShotSelection` = `0x0010` in `CamCameraState`), so a requested
+    /// camera may never be reflected even when the switch succeeded. The
+    /// observed camera number and camera state ride along in the payload for
+    /// callers that want to inspect them.
     async fn camera_focus(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
         let args: CameraFocusArgs = match parse_tool_args(&id, &params, "camera_focus") {
             Ok(args) => args,
@@ -636,9 +644,7 @@ impl IracingMcpHandler {
         }
 
         let expected_group = args.group_number.unwrap_or(before.cam_group_number);
-        let expected_camera = args.camera_number.unwrap_or(before.cam_camera_number);
         let verify_group = args.group_number.is_some();
-        let verify_camera = args.camera_number.is_some();
         let timeout = Duration::from_millis(1500);
 
         let outcome = verify_loop(
@@ -649,45 +655,42 @@ impl IracingMcpHandler {
             |current: &ReplayState| {
                 current.cam_car_idx == args.car_idx
                     && (!verify_group || current.cam_group_number == expected_group)
-                    && (!verify_camera || current.cam_camera_number == expected_camera)
             },
             timeout,
             Duration::from_millis(50),
         )
         .await;
 
-        let timeout_extra = json!({
+        let extra = json!({
             "requested": {
                 "carIdx": args.car_idx,
                 "groupNumber": args.group_number,
                 "cameraNumber": args.camera_number
-            }
+            },
+            "verifiedFields": if verify_group {
+                vec!["camCarIdx", "camGroupNumber"]
+            } else {
+                vec!["camCarIdx"]
+            },
+            "cameraNumberAdvisory": CAMERA_NUMBER_ADVISORY
         });
 
-        respond_verify_outcome(
-            id,
-            "camera_focus",
-            outcome,
-            json!({}),
-            timeout_extra,
-            || {
-                let expected_parts = [
-                    Some(format!("carIdx={}", args.car_idx)),
-                    verify_group.then(|| format!("groupNumber={}", expected_group)),
-                    verify_camera.then(|| format!("cameraNumber={}", expected_camera)),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" ");
+        respond_verify_outcome(id, "camera_focus", outcome, extra.clone(), extra, || {
+            let expected_parts = [
+                Some(format!("carIdx={}", args.car_idx)),
+                verify_group.then(|| format!("groupNumber={}", expected_group)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
 
-                format!(
-                    "Camera did not reach expected {} within {}ms.",
-                    expected_parts,
-                    timeout.as_millis()
-                )
-            },
-        )
+            format!(
+                "Camera did not reach expected {} within {}ms.",
+                expected_parts,
+                timeout.as_millis()
+            )
+        })
     }
 
     async fn replay_seek_frame(&self, id: Option<Value>, params: Value) -> JsonRpcResponse {
@@ -1250,6 +1253,10 @@ fn verify_search_event_state(
         | ReplaySearchMode::NextIncident => current.replay_frame_num > before.replay_frame_num,
     }
 }
+
+/// Carried in every `camera_focus` payload so a caller knows why a requested
+/// `cameraNumber` is absent from `verifiedFields`.
+const CAMERA_NUMBER_ADVISORY: &str = "cameraNumber is forwarded to iRacing but not verified: the sim selects the shot within a camera group itself (shot range, and UseAutoShotSelection = 0x0010 in camCameraState). Read observed.camCameraNumber / observed.camCameraState for the resulting shot.";
 
 /// A `CamCameraState` bit paired with the [`CameraSetStateArgs`] field that
 /// requests it.

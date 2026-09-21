@@ -364,8 +364,8 @@ async fn http_mcp_camera_and_timeline_tools_work() {
         Value::from(3)
     );
     assert_eq!(
-        camera_json["result"]["structuredContent"]["data"]["observed"]["camCameraNumber"],
-        Value::from(2)
+        camera_json["result"]["structuredContent"]["data"]["verifiedFields"],
+        json!(["camCarIdx", "camGroupNumber"])
     );
 
     let seek_req = json!({
