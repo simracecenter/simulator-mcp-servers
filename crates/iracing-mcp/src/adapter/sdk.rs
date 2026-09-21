@@ -72,13 +72,18 @@ const BROADCAST_REPLAY_SET_PLAY_POSITION: i32 = 4;
 const BROADCAST_REPLAY_SEARCH: i32 = 5;
 #[cfg(windows)]
 const BROADCAST_REPLAY_SEARCH_SESSION_TIME: i32 = 12;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 /// Bit 0 (`irsdk_stConnected`) of `IrsdkHeaderPrefix::status`. iRacing's
 /// background `iRacingService` keeps the shared-memory mapping open (with the
 /// last-known telemetry frozen) even after the sim itself has fully exited,
 /// so successfully opening/mapping the file is not sufficient to detect a
 /// live connection - this bit must be checked too.
 const IRSDK_STATUS_CONNECTED: i32 = 1;
+
+#[cfg(any(windows, test))]
+fn irsdk_status_connected(status: i32) -> bool {
+    status & IRSDK_STATUS_CONNECTED != 0
+}
 
 #[cfg(windows)]
 #[repr(C)]
@@ -101,6 +106,11 @@ struct IrsdkHeaderPrefix {
 struct SdkConnection {
     _connection: iracing::Connection,
     blocking: iracing::telemetry::Blocking,
+    shared_memory: SharedMemoryView,
+}
+
+#[cfg(windows)]
+struct SharedMemoryView {
     mapping: winapi::um::winnt::HANDLE,
     view: *mut std::ffi::c_void,
 }
@@ -118,6 +128,12 @@ unsafe impl Sync for SdkConnection {}
 impl Drop for SdkConnection {
     fn drop(&mut self) {
         let _ = self.blocking.close();
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SharedMemoryView {
+    fn drop(&mut self) {
         unsafe {
             UnmapViewOfFile(self.view);
             CloseHandle(self.mapping);
@@ -531,6 +547,19 @@ mod tests {
         assert_not_available(adapter.get_standings(None).await);
         assert_not_available(adapter.get_relatives().await);
         assert_not_available(adapter.resolve_driver("driver", 1).await);
+    }
+}
+
+#[cfg(test)]
+mod sdk_status_tests {
+    use super::irsdk_status_connected;
+
+    #[test]
+    fn requires_the_connected_status_bit() {
+        assert!(!irsdk_status_connected(0));
+        assert!(!irsdk_status_connected(2));
+        assert!(irsdk_status_connected(1));
+        assert!(irsdk_status_connected(3));
     }
 }
 
@@ -2007,13 +2036,31 @@ fn ensure_sdk_connection() -> Result<(), AdapterError> {
 #[cfg(windows)]
 impl SdkConnection {
     fn new() -> Result<Self, AdapterError> {
+        let shared_memory = SharedMemoryView::open()?;
+        shared_memory.ensure_connected()?;
+
         let connection = iracing::Connection::new()
             .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
         let blocking = connection
             .blocking()
             .map_err(|error| AdapterError::NotConnected(error.to_string()))?;
-        let path = wide_string(IRSDK_MEMMAPFILENAME);
 
+        Ok(Self {
+            _connection: connection,
+            blocking,
+            shared_memory,
+        })
+    }
+
+    fn ensure_connected(&self) -> Result<(), AdapterError> {
+        self.shared_memory.ensure_connected()
+    }
+}
+
+#[cfg(windows)]
+impl SharedMemoryView {
+    fn open() -> Result<Self, AdapterError> {
+        let path = wide_string(IRSDK_MEMMAPFILENAME);
         unsafe {
             let mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, path.as_ptr());
             if mapping.is_null() {
@@ -2029,18 +2076,13 @@ impl SdkConnection {
                 return Err(AdapterError::NotConnected(error));
             }
 
-            Ok(Self {
-                _connection: connection,
-                blocking,
-                mapping,
-                view,
-            })
+            Ok(Self { mapping, view })
         }
     }
 
     fn ensure_connected(&self) -> Result<(), AdapterError> {
         let status = unsafe { (*(self.view as *const IrsdkHeaderPrefix)).status };
-        if status & IRSDK_STATUS_CONNECTED == 0 {
+        if !irsdk_status_connected(status) {
             return Err(AdapterError::NotConnected(
                 "iRacing SDK shared memory is mapped but reports the simulator is not connected"
                     .to_string(),
@@ -2205,14 +2247,14 @@ fn build_snapshot(
     session_document: &mut Option<(i32, Arc<YamlValue>)>,
     revision: &mut SessionRevisionTracker,
 ) -> Result<TelemetrySnapshot, AdapterError> {
-    let header = unsafe { &*(sdk.view as *const IrsdkHeaderPrefix) };
-    if header.status & IRSDK_STATUS_CONNECTED == 0 {
+    let header = unsafe { &*(sdk.shared_memory.view as *const IrsdkHeaderPrefix) };
+    if !irsdk_status_connected(header.status) {
         return Err(AdapterError::NotConnected(
             "simulator disconnected".to_string(),
         ));
     }
     if session_document.as_ref().map(|(update, _)| *update) != Some(header.session_info_update) {
-        let (_, yaml) = unsafe { read_session_yaml_from_view(sdk.view) }?;
+        let (_, yaml) = unsafe { read_session_yaml_from_view(sdk.shared_memory.view) }?;
         session_document_for_update(session_document, header.session_info_update, &yaml)?;
     }
     let document = session_document
