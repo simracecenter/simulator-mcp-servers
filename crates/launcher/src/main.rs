@@ -86,6 +86,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    mcp_core::provenance::mark_process_start();
     // Persistent rotated log file next to the config so a later wedge leaves
     // a trail — stderr alone is lost for a tray/headless install. The guard
     // must outlive the process or buffered lines are dropped.

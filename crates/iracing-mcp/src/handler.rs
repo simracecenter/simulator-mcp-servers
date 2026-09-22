@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 use mcp_core::metadata::finalize_tool_result;
+use mcp_core::provenance;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
 use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, SnapshotMeta, ToolCapability};
 use serde::{Deserialize, Serialize};
@@ -382,10 +383,11 @@ fn tool_descriptors() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        provenance::tool_descriptor(),
     ]
 }
 
-/// All 15 tools above are fully implemented against `IracingAdapter` — this
+/// All tools above are fully implemented against `IracingAdapter` — this
 /// server is the mature reference implementation (ADR 0001 D5), so every
 /// entry is `Supported`. Kept as an explicit list (rather than a loop over
 /// `tool_descriptors()`) so a newly added tool that's *not* yet fully wired
@@ -408,6 +410,7 @@ fn capabilities() -> Vec<ToolCapability> {
         ToolCapability::supported("get_relatives"),
         ToolCapability::supported("resolve_driver"),
         ToolCapability::supported("get_capabilities"),
+        ToolCapability::supported(provenance::TOOL_NAME),
     ]
 }
 
@@ -490,6 +493,7 @@ impl IracingMcpHandler {
                 }
             }
             "get_capabilities" => tool_ok(id, capabilities()),
+            provenance::TOOL_NAME => tool_ok(id, provenance::runtime_provenance("iracing-mcp")),
             _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
         };
         self.finalize_tool_result(response, started).await
@@ -1471,7 +1475,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_all_sixteen_tools() {
+    async fn tools_list_returns_all_seventeen_tools() {
         let handler = handler();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1483,7 +1487,7 @@ mod tests {
         let response = handler.handle(request).await;
         let tools = response.result.unwrap()["tools"].as_array().unwrap().len();
 
-        assert_eq!(tools, 16);
+        assert_eq!(tools, 17);
     }
 
     #[tokio::test]
@@ -1500,7 +1504,7 @@ mod tests {
         let data = response.result.unwrap()["structuredContent"]["data"].clone();
         let caps = data.as_array().unwrap();
 
-        assert_eq!(caps.len(), 16);
+        assert_eq!(caps.len(), 17);
         assert!(caps.iter().all(|c| c["status"] == "supported"));
     }
 

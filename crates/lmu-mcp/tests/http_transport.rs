@@ -164,7 +164,7 @@ async fn http_mcp_initialize_and_tools_list_work() {
     let tools = list_json["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 13);
+    assert_eq!(tools.len(), 14);
 }
 
 #[tokio::test]
@@ -223,5 +223,5 @@ async fn http_mcp_camera_focus_verifies() {
 async fn http_mcp_get_capabilities_lists_all_tools() {
     let data = mcp_call("get_capabilities", json!({})).await;
     assert_eq!(data["ok"], Value::Bool(true));
-    assert_eq!(data["data"].as_array().unwrap().len(), 13);
+    assert_eq!(data["data"].as_array().unwrap().len(), 14);
 }

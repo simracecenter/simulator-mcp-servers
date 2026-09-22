@@ -7,6 +7,7 @@
 
 use async_trait::async_trait;
 use mcp_core::metadata::finalize_tool_result;
+use mcp_core::provenance;
 use mcp_core::verify::{verify_loop, VerifyOutcome};
 use mcp_core::{JsonRpcRequest, JsonRpcResponse, McpHandler, SnapshotMeta, ToolCapability};
 use serde::{Deserialize, Serialize};
@@ -237,6 +238,7 @@ fn tool_descriptors() -> Vec<Value> {
             "description": "Returns which tools are supported, degraded, or unsupported for the active LMU adapter, so an agent can plan without hitting not_supported/not_yet_implemented errors.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
+        provenance::tool_descriptor(),
     ]
 }
 
@@ -276,6 +278,7 @@ fn capabilities() -> Vec<ToolCapability> {
             "a replaytime endpoint exists but live-testing showed no observable seek effect from the live-monitor context — see ADR 0002 amendment and issue #9",
         ),
         ToolCapability::supported("get_capabilities"),
+        ToolCapability::supported(provenance::TOOL_NAME),
     ]
 }
 
@@ -349,6 +352,7 @@ impl LmuMcpHandler {
                 }
             }
             "get_capabilities" => tool_ok(id, capabilities()),
+            provenance::TOOL_NAME => tool_ok(id, provenance::runtime_provenance("lmu-mcp")),
             _ => JsonRpcResponse::err(id, -32602, "unknown tool name"),
         };
         self.finalize_tool_result(response, started).await
@@ -744,7 +748,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_all_thirteen_tools() {
+    async fn tools_list_returns_all_fourteen_tools() {
         let handler = handler();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -756,7 +760,7 @@ mod tests {
         let response = handler.handle(request).await;
         let tools = response.result.unwrap()["tools"].as_array().unwrap().len();
 
-        assert_eq!(tools, 13);
+        assert_eq!(tools, 14);
     }
 
     #[tokio::test]

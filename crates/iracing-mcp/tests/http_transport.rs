@@ -668,3 +668,29 @@ async fn http_mcp_tool_errors_use_text_and_structured_content() {
     );
     assert_full_meta(&bad_json["result"]["structuredContent"]["meta"]);
 }
+
+#[tokio::test]
+async fn http_mcp_get_runtime_provenance_attests_running_executable() {
+    let data = mcp_call("get_runtime_provenance", json!({})).await;
+    assert_eq!(
+        data["schema"],
+        Value::String("simracecenter.runtime-provenance/1".into())
+    );
+    assert_eq!(data["serverName"], Value::String("iracing-mcp".into()));
+    assert_eq!(
+        data["version"],
+        Value::String(env!("CARGO_PKG_VERSION").into())
+    );
+    assert!(data["pid"].is_u64());
+    let executable = &data["executable"];
+    assert_eq!(executable["unavailableReason"], Value::Null);
+    assert_eq!(executable["sha256"].as_str().map(str::len), Some(64));
+    assert!(executable["sizeBytes"].as_u64().unwrap_or(0) > 0);
+    let file_name = executable["fileName"].as_str().expect("file name");
+    assert!(!file_name.contains('/') && !file_name.contains('\\'));
+    // Exactly one of sourceRevision / its reason is populated.
+    assert_ne!(
+        data["sourceRevision"].is_null(),
+        data["sourceRevisionUnavailableReason"].is_null()
+    );
+}

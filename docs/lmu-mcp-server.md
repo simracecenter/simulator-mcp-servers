@@ -79,6 +79,7 @@ discovering gaps via a `not_supported`/`not_yet_implemented` error.
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `get_capabilities` | *(none)* | An array of `{ name, status, reason? }` — `status` is `supported`, `degraded`, or `unsupported` — for every tool above, reflecting this build's real support against a live LMU instance. Call this once up front so an agent can plan around gaps instead of discovering them via runtime errors. |
+| `get_runtime_provenance` | *(none)* | Self-attestation of the running server process (schema `simracecenter.runtime-provenance/1`): `serverName`, `version`, `sourceRevision` (git SHA stamped at build, or `null` plus `sourceRevisionUnavailableReason`), `buildTarget`, `buildProfile`, `pid`, `startedAtUnixMs`, and `executable` = `{ fileName, sizeBytes, sha256, unavailableReason }` where `sha256` is computed over the bytes of the currently running executable (`current_exe()`). Only the file name is exposed, never its directory. Lets an evidence bundle prove which binary was active rather than inferring it from a configured artifact. This is self-reported by the process, not an independent host-integrity attestation. |
 
 ## Technical implementation
 
