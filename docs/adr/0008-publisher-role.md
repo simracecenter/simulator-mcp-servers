@@ -41,9 +41,11 @@ camera tools.
 The Director pairing contract is defined by
 `simracecenter/director` PR #9,
 [`docs/12-rig-pairing.md`](https://github.com/simracecenter/director/blob/main/docs/12-rig-pairing.md).
-The publisher listener serves HTTPS with a self-signed certificate persisted
-per Rig, and Director performs TOFU by pinning the certificate fingerprint
-supplied during pairing (see Director ADR 0014). `POST /pair` mints a
+The publisher listener originally served HTTPS with a self-signed certificate
+persisted per Rig, with Director pinning its fingerprint (TOFU, Director ADR
+0014). Since the 2026-09-22 amendment below the listener is plaintext HTTP; the
+persisted certificate remains only as the source of the Rig fingerprint shown
+in the Console and used to key grants. `POST /pair` mints a
 persistent credential after validating the one-shot three-digit code. A Rig
 may retain independently revocable grants for multiple Directors, identified
 by their normalized ingest certificate fingerprints. Re-pairing the same
@@ -56,6 +58,18 @@ again. The five-strike lockout, publisher-only grant scope, digest-only
 credential persistence, and revocation protect the exception to ADR 0007's
 rule that credential issuance is a Rust API rather than an unauthenticated
 network endpoint.
+
+## Plaintext publisher control (2026-09-22 amendment)
+
+Director's `publisher_stop` failed with OpenSSL `WRONG_VERSION_NUMBER` once
+Rigs answered plaintext on 8765 while Director still pinned HTTPS. Publisher
+control is now plaintext HTTP end to end: `bind_rustls` is replaced by
+`axum_server::bind` for the publisher role, `/pair` and `/mcp` keep the bearer
+credential, Origin and session checks, and the LAN-only deployment rule of
+ADR 0007 is the transport boundary. Director-side pairing no longer discovers
+or stores a Rig certificate pin (`simracecenter/director` #67). The
+Director ingest destination handed over in `/pair` must still be `https://`;
+that check is unchanged.
 
 ## Durable ingest delivery (2026-09-12 amendment)
 

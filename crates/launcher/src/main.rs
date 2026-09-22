@@ -66,8 +66,8 @@ struct Cli {
 
     /// Address the MCP HTTP transport binds to. Defaults to `0.0.0.0:8765`.
     /// Simulator roles use the existing unauthenticated HTTP transport;
-    /// publisher uses HTTPS with bearer credentials and a separate pairing
-    /// endpoint. To restrict it to same-machine clients, pass a loopback
+    /// publisher serves plaintext HTTP too, but requires a bearer credential
+    /// issued by its separate pairing endpoint (`POST /pair`). To restrict it to same-machine clients, pass a loopback
     /// address (e.g. `--bind 127.0.0.1:8765`).
     #[arg(long, default_value = "0.0.0.0:8765")]
     bind: String,
@@ -149,7 +149,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.bind,
         handler.clone(),
         pairing.clone(),
-        identity.clone(),
     ));
     supervisor.start(active_sim);
     let settings_state = SettingsState::new(handler.clone(), active_sim, pairing, supervisor);

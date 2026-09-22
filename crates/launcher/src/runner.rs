@@ -18,7 +18,7 @@ use tracing::error;
 
 use crate::config::Sim;
 use crate::TransportKind;
-use crate::{pair_server::build_publisher_router, pairing::PairingState, tls::RigIdentity};
+use crate::{pair_server::build_publisher_router, pairing::PairingState};
 use tokio::task::JoinHandle;
 
 /// A [`McpHandler`] that delegates to a swappable inner handler.
@@ -76,7 +76,6 @@ pub struct TransportSupervisor {
     bind: String,
     handler: Arc<SwappableHandler>,
     pairing: Arc<PairingState>,
-    identity: Arc<RigIdentity>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -86,14 +85,12 @@ impl TransportSupervisor {
         bind: String,
         handler: Arc<SwappableHandler>,
         pairing: Arc<PairingState>,
-        identity: Arc<RigIdentity>,
     ) -> Self {
         Self {
             transport,
             bind,
             handler,
             pairing,
-            identity,
             task: Mutex::new(None),
         }
     }
@@ -111,7 +108,6 @@ impl TransportSupervisor {
         let bind = self.bind.clone();
         let handler = Arc::clone(&self.handler);
         let pairing = Arc::clone(&self.pairing);
-        let identity = Arc::clone(&self.identity);
         let task = tokio::spawn(async move {
             let result: Result<(), Box<dyn std::error::Error>> = match transport {
                 TransportKind::Stdio => mcp_core::transport::stdio::run_stdio(handler)
@@ -125,10 +121,11 @@ impl TransportSupervisor {
                             return;
                         }
                     };
-                    let tls = axum_server::tls_rustls::RustlsConfig::from_config(
-                        identity.server_config(),
-                    );
-                    axum_server::bind_rustls(address, tls)
+                    // Plaintext HTTP on the trusted LAN: Director authenticates with
+                    // the bearer credential issued by /pair, and pins only its own
+                    // ingest listener. A TLS listener here makes every Director
+                    // command fail with WRONG_VERSION_NUMBER.
+                    axum_server::bind(address)
                         .serve(build_publisher_router(handler, pairing).into_make_service())
                         .await
                         .map_err(Into::into)
@@ -178,6 +175,56 @@ mod tests {
             ]
         );
         assert!(!names.contains(&"get_session_overview"));
+    }
+
+    #[tokio::test]
+    async fn publisher_role_serves_plaintext_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let bind = format!("127.0.0.1:{port}");
+        let pairing = Arc::new(
+            PairingState::new(
+                Arc::new(mcp_core::transport::http::access::CredentialRegistry::new()),
+                Arc::new(crate::pairing::InMemoryPairingStore::new(
+                    crate::config::LauncherConfig::default(),
+                )),
+                "rig1".to_string(),
+                "AA:BB".to_string(),
+            )
+            .unwrap(),
+        );
+        let supervisor = TransportSupervisor::new(
+            TransportKind::Http,
+            bind.clone(),
+            Arc::new(SwappableHandler::new(build_handler(Sim::Publisher))),
+            pairing,
+        );
+        supervisor.start(Sim::Publisher);
+
+        let mut stream = None;
+        for _ in 0..50 {
+            if let Ok(connected) = tokio::net::TcpStream::connect(&bind).await {
+                stream = Some(connected);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut stream = stream.expect("publisher listener accepts plaintext TCP");
+        stream
+            .write_all(b"GET /mcp HTTP/1.1\r\nHost: rig1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "expected an HTTP 401 for an unauthenticated plaintext request, got: {response}"
+        );
     }
 
     #[tokio::test]

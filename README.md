@@ -27,8 +27,8 @@ Status: **early development**. Learn more about the product at
 
 Trusted companion integration uses the protected HTTP router in `mcp-core`;
 see [ADR 0007](docs/adr/0007-protected-http-transport.md). The publisher role
-enables it with HTTPS, pairing codes, certificate pinning, and scoped bearer
-credentials. Simulator-role network defaults remain unchanged.
+enables it over plaintext HTTP on the private LAN with pairing codes and scoped
+bearer credentials; only the publisher's ingest upload to Director uses TLS. Simulator-role network defaults remain unchanged.
 
 ## What's Here
 
@@ -104,8 +104,8 @@ all keyed by the `Mcp-Session-Id` header issued on `initialize`
 That default trades same-machine-only exposure for LAN reachability for simulator roles, whose
 transport is **unauthenticated** — anything that can reach it can invoke any tool. Run those roles
 only on a trusted network segment and **never port-forward them to the internet** (see
-[SECURITY.md](SECURITY.md)). The publisher role instead serves an HTTPS protected router and
-requires pairing before MCP access. A publisher can trust multiple Directors
+[SECURITY.md](SECURITY.md)). The publisher role instead serves the protected router (plaintext HTTP,
+bearer-authenticated) and requires pairing before MCP access. A publisher can trust multiple Directors
 without discarding existing grants; the Director issuing Start configures its
 own ingest destination first. Those grants remain stored while the launcher
 switches to a simulator role, so returning to publisher does not require
