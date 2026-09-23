@@ -9,7 +9,7 @@ pub fn run_pipeline(
     status: std::sync::Arc<std::sync::Mutex<crate::publisher_status::PublisherStatus>>,
     controls_rx: std::sync::mpsc::Receiver<crate::controls::ControlRequest>,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
+    use std::{sync::atomic::Ordering, time::Instant};
 
     /// A session clock that goes backwards by more than this inside one
     /// sub-session is a restart, not sampling jitter.
@@ -144,6 +144,7 @@ pub fn run_pipeline(
     let mut lifecycle = LifecyclePublisher::new(env!("CARGO_PKG_VERSION"));
     let mut heartbeat = HeartbeatScheduler::new(cfg.publisher.heartbeat_interval_ms);
     let mut driver_material = IntervalScheduler::new(cfg.publisher.driver_material_interval_ms);
+    let mut incident_cluster = IntervalScheduler::new(cfg.publisher.incident_cluster_interval_ms);
     let mut roster_cache = RosterCache::new();
     let mut session_lifecycle = SessionLifecycleTracker::new();
     let mut race_session_id = String::from("0");
@@ -248,6 +249,7 @@ pub fn run_pipeline(
             lifecycle = LifecyclePublisher::new(env!("CARGO_PKG_VERSION"));
             roster_cache = RosterCache::new();
             session_lifecycle = SessionLifecycleTracker::new();
+            incident_cluster = IntervalScheduler::new(cfg.publisher.incident_cluster_interval_ms);
             pending_events.clear();
             sub_session_id = 0;
             last_session_num = None;
@@ -347,6 +349,9 @@ pub fn run_pipeline(
                                 pending_events.clear();
                                 driver_material = IntervalScheduler::new(
                                     cfg.publisher.driver_material_interval_ms,
+                                );
+                                incident_cluster = IntervalScheduler::new(
+                                    cfg.publisher.incident_cluster_interval_ms,
                                 );
 
                                 // Tell the consumer explicitly that every car
@@ -560,7 +565,8 @@ pub fn run_pipeline(
                 }
 
                 let roster = roster_cache.roster();
-                let events = engine.process_frame(&frame);
+                let evaluate_incidents = incident_cluster.due(Instant::now());
+                let events = engine.process_frame_with_incident_cadence(&frame, evaluate_incidents);
 
                 for event in &events {
                     log_event(event, roster, &frame);

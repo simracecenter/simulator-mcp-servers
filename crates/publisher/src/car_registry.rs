@@ -180,6 +180,20 @@ impl CarRegistry {
         self.cars.iter().filter_map(|car| car.as_ref())
     }
 
+    pub fn recently_observed_cars(
+        &self,
+        session_tick: i64,
+        max_age_ticks: i64,
+    ) -> impl Iterator<Item = &CarState> {
+        self.cars
+            .iter()
+            .zip(self.last_seen_tick)
+            .filter(move |(_, last_seen_tick)| {
+                session_tick.saturating_sub(*last_seen_tick) <= max_age_ticks
+            })
+            .filter_map(|(car, _)| car.as_ref())
+    }
+
     pub fn get(&self, car_idx: u8) -> Option<&CarState> {
         self.cars.get(car_idx as usize).and_then(|car| car.as_ref())
     }

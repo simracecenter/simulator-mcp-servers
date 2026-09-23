@@ -135,6 +135,8 @@ pub struct PublisherSection {
     pub heartbeat_interval_ms: u64,
     /// Interval between DRIVER_MATERIAL events, in milliseconds. `0` disables.
     pub driver_material_interval_ms: u64,
+    /// Interval between incident-cluster evaluations, in milliseconds. `0` disables.
+    pub incident_cluster_interval_ms: u64,
 }
 
 impl Default for PublisherSection {
@@ -144,6 +146,7 @@ impl Default for PublisherSection {
             batch_interval_ms: 500,
             heartbeat_interval_ms: 15_000,
             driver_material_interval_ms: 25_000,
+            incident_cluster_interval_ms: 250,
         }
     }
 }
@@ -228,6 +231,7 @@ struct RawPublisher {
     batch_interval_ms: Option<u64>,
     heartbeat_interval_ms: Option<u64>,
     driver_material_interval_ms: Option<u64>,
+    incident_cluster_interval_ms: Option<u64>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -298,6 +302,12 @@ fn apply_env_overrides(raw: &mut RawConfig) {
     if let Ok(v) = env::var("PUBLISHER_DRIVER_MATERIAL_INTERVAL_MS") {
         if let Ok(n) = v.parse::<u64>() {
             raw.publisher.driver_material_interval_ms = Some(n);
+        }
+    }
+
+    if let Ok(v) = env::var("PUBLISHER_INCIDENT_CLUSTER_INTERVAL_MS") {
+        if let Ok(n) = v.parse::<u64>() {
+            raw.publisher.incident_cluster_interval_ms = Some(n);
         }
     }
 }
@@ -454,6 +464,10 @@ fn build_and_validate(raw: RawConfig) -> Result<PublisherConfig, ConfigError> {
                 .publisher
                 .driver_material_interval_ms
                 .unwrap_or(defaults.driver_material_interval_ms),
+            incident_cluster_interval_ms: raw
+                .publisher
+                .incident_cluster_interval_ms
+                .unwrap_or(defaults.incident_cluster_interval_ms),
         },
     })
 }
@@ -493,6 +507,7 @@ scope         = "api://rc/.default"
 rc_api_url            = "https://api.example.com"
 batch_interval_ms     = 250
 heartbeat_interval_ms = 5000
+incident_cluster_interval_ms = 125
 "#,
         );
         let auth = cfg.auth.as_ref().expect("racecontrol has auth");
@@ -505,6 +520,7 @@ heartbeat_interval_ms = 5000
         assert_eq!(cfg.publisher.rc_api_url, "https://api.example.com");
         assert_eq!(cfg.publisher.batch_interval_ms, 250);
         assert_eq!(cfg.publisher.heartbeat_interval_ms, 5000);
+        assert_eq!(cfg.publisher.incident_cluster_interval_ms, 125);
     }
 
     #[test]
@@ -524,6 +540,7 @@ client_secret = "s"
         assert_eq!(cfg.publisher.rc_api_url, "https://simracecenter.com");
         assert_eq!(cfg.publisher.batch_interval_ms, 500);
         assert_eq!(cfg.publisher.heartbeat_interval_ms, 15_000);
+        assert_eq!(cfg.publisher.incident_cluster_interval_ms, 250);
     }
 
     #[test]
@@ -577,6 +594,7 @@ heartbeat_interval_ms = 0
                 batch_interval_ms: Some(500),
                 heartbeat_interval_ms: Some(15_000),
                 driver_material_interval_ms: Some(25_000),
+                incident_cluster_interval_ms: Some(250),
             },
             local: RawLocal::default(),
         };

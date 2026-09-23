@@ -71,11 +71,11 @@ fn assert_envelope_contract(json: &Value, expected_type: &str) {
 
 /// Publisher and subject identity are on *every* event, race and system alike.
 fn assert_identity_contract(json: &Value) {
-    assert_eq!(json["contractVersion"], 2);
+    assert_eq!(json["contractVersion"], 3);
     assert!(json["sequence"].is_u64());
     assert!(json["eventKey"]
         .as_str()
-        .is_some_and(|k| k.starts_with("v2-")));
+        .is_some_and(|k| k.starts_with("v3-")));
 
     let rig_id = json["rigId"].as_str().expect("rigId");
     let publisher = &json["publisher"];
@@ -686,7 +686,7 @@ fn events_published_on_one_tick_have_distinct_event_keys() {
     assert_ne!(first.id, second.id);
     assert!(first
         .event_key
-        .starts_with("v2-88087370-9876-TRAFFIC_INTERCEPT-"));
+        .starts_with("v3-88087370-9876-TRAFFIC_INTERCEPT-"));
 }
 
 #[test]
@@ -740,11 +740,43 @@ fn incident_cluster_includes_all_car_refs() {
     let event = RaceEvent::IncidentCluster {
         lap: 6,
         session_time: 370.0,
+        session_tick: 9876,
+        incident_id: 12,
         bucket: 15,
         lap_dist_pct_from: 0.75,
         lap_dist_pct_to: 0.80,
         car_idxs: vec![1, 2, 4],
+        participants: vec![
+            publisher::race_event::IncidentParticipant {
+                car_idx: 1,
+                lap: 6,
+                lap_dist_pct: 0.76,
+                speed_mps: 8.0,
+                on_pit_road: false,
+                track_surface: 1,
+                in_world: true,
+            },
+            publisher::race_event::IncidentParticipant {
+                car_idx: 2,
+                lap: 6,
+                lap_dist_pct: 0.77,
+                speed_mps: 3.0,
+                on_pit_road: false,
+                track_surface: 2,
+                in_world: true,
+            },
+            publisher::race_event::IncidentParticipant {
+                car_idx: 4,
+                lap: 6,
+                lap_dist_pct: 0.78,
+                speed_mps: 0.0,
+                on_pit_road: false,
+                track_surface: 3,
+                in_world: true,
+            },
+        ],
         severity: 3.0,
+        severity_normalized: 0.16666667,
         primary_car_idx: Some(1),
         incident_type: Some("Incident".to_owned()),
     };
@@ -789,12 +821,91 @@ fn incident_cluster_includes_all_car_refs() {
 
     // Incident type
     assert_eq!(json["payload"]["incidentType"], "Incident");
+    assert_eq!(json["payload"]["incidentId"], 12);
+    assert_eq!(json["payload"]["lifecycleState"], "ACTIVE");
+    assert_eq!(
+        json["payload"]["participantStates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(json["payload"]["participantStates"][0]["trackSurface"], 1);
+    assert!(json["payload"]["incidentKey"]
+        .as_str()
+        .is_some_and(|key| key.ends_with(":incident:12")));
 
     // Location: centroid of the cluster bucket
     let lap_dist_pct = json["payload"]["lapDistPct"].as_f64().unwrap();
     assert!(
         (lap_dist_pct - 0.775).abs() < 1e-3,
         "lapDistPct should be centroid ~0.775, got {lap_dist_pct}"
+    );
+}
+
+#[test]
+fn incident_resolution_reuses_stable_incident_key() {
+    let opened = RaceEvent::IncidentCluster {
+        lap: 6,
+        session_time: 370.0,
+        session_tick: 9876,
+        incident_id: 12,
+        bucket: 15,
+        lap_dist_pct_from: 0.75,
+        lap_dist_pct_to: 0.80,
+        car_idxs: vec![1, 2, 4],
+        participants: Vec::new(),
+        severity: 3.0,
+        severity_normalized: 0.16666667,
+        primary_car_idx: Some(1),
+        incident_type: Some("Incident".to_owned()),
+    };
+    let resolved = RaceEvent::IncidentClusterResolved {
+        lap: 6,
+        session_time: 374.5,
+        session_tick: 10146,
+        incident_id: 12,
+        bucket: 15,
+        started_session_time: 370.0,
+        started_session_tick: 9876,
+        car_idxs: vec![1, 2, 4],
+    };
+
+    let opened_json = normalized_event_json(&build_event(
+        &opened,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+    let resolved_json = normalized_event_json(&build_event(
+        &resolved,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+
+    assert_eq!(
+        opened_json["payload"]["incidentKey"],
+        resolved_json["payload"]["incidentKey"]
+    );
+    assert_eq!(resolved_json["payload"]["lifecycleState"], "RESOLVED");
+    assert_eq!(
+        resolved_json["payload"]["resolution"]["startedSessionTick"],
+        9876
+    );
+    assert_eq!(
+        resolved_json["payload"]["resolution"]["resolvedSessionTick"],
+        10146
+    );
+    assert_eq!(
+        resolved_json["payload"]["resolution"]["durationSeconds"],
+        4.5
     );
 }
 

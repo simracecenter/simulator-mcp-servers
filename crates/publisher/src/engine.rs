@@ -268,6 +268,14 @@ impl NarrativeEngine {
     }
 
     pub fn process_frame(&mut self, frame: &TelemetryFrame) -> Vec<RaceEvent> {
+        self.process_frame_with_incident_cadence(frame, true)
+    }
+
+    pub fn process_frame_with_incident_cadence(
+        &mut self,
+        frame: &TelemetryFrame,
+        evaluate_incidents: bool,
+    ) -> Vec<RaceEvent> {
         let mut events = Vec::new();
         self.car_registry.update_from_frame(
             frame,
@@ -284,6 +292,16 @@ impl NarrativeEngine {
             frame.player_car_idx,
             frame.player_incident_count,
         ));
+        if evaluate_incidents {
+            events.extend(self.incident_cluster.update(
+                &self.car_registry,
+                self.anchor_count,
+                frame.lap,
+                frame.session_time,
+                frame.session_tick,
+                frame.session_flags & CAUTION != 0,
+            ));
+        }
         self.tire_degradation.update_ema(frame);
         if let Some(event) = self.lift_coast.update(frame) {
             events.push(event);
@@ -367,10 +385,10 @@ impl NarrativeEngine {
             const NEARBY_DIST_THRESHOLD: f32 = 0.15;
             let player_ldp = ldp;
             let mut best_primary: Option<u8> = None;
-            let mut best_bucket: Option<u8> = None;
+            let mut best_incident_id: Option<u32> = None;
             let mut best_dist = f32::MAX;
-            for (&bucket, (_cluster_lap, cars)) in &self.incident_cluster.active_clusters {
-                let cluster_center = (bucket as f32 + 0.5) / self.anchor_count.max(1) as f32;
+            for active in self.incident_cluster.active_clusters.values() {
+                let cluster_center = (active.bucket as f32 + 0.5) / self.anchor_count.max(1) as f32;
                 let raw_dist = (player_ldp - cluster_center).abs();
                 // Account for track wrap-around (e.g. position 0.98 vs 0.02).
                 let dist = raw_dist.min(1.0 - raw_dist);
@@ -378,17 +396,13 @@ impl NarrativeEngine {
                     best_dist = dist;
                     // Use the lowest car index as the primary trigger when incident
                     // damage data is unavailable — consistent with IncidentClusterDetector.
-                    best_primary = cars.iter().copied().min();
-                    best_bucket = Some(bucket);
+                    best_primary = active.car_idxs.iter().copied().min();
+                    best_incident_id = Some(active.incident_id);
                 }
             }
             let (trigger_car_idx, linked_incident_id, scope) = if best_dist <= NEARBY_DIST_THRESHOLD
             {
-                (
-                    best_primary,
-                    best_bucket.map(|b| b as u32),
-                    FlagScope::Nearby,
-                )
+                (best_primary, best_incident_id, FlagScope::Nearby)
             } else {
                 (None, None, FlagScope::Unknown)
             };
@@ -852,13 +866,6 @@ impl NarrativeEngine {
                     done_lap,
                     t,
                 ));
-                events.extend(self.incident_cluster.update(
-                    &self.car_registry,
-                    self.anchor_count,
-                    done_lap,
-                    t,
-                    self.prev_session_flags & CAUTION != 0,
-                ));
                 events.extend(self.compression_zone.detect(
                     &self.car_registry,
                     self.anchor_count,
@@ -1162,6 +1169,63 @@ mod tests {
             brake: 0.0,
             speed: 0.0,
         }
+    }
+
+    fn incident_cluster_frame() -> TelemetryFrame {
+        let mut frame = frame_with_gap(1, 10.0, 4, 0.500);
+        frame.session_tick = 100;
+        frame.car_idx_lap_dist_pct = vec![0.500; 3];
+        frame.car_idx_position = vec![1, 2, 3];
+        frame.car_idx_on_pit_road = vec![false; 3];
+        frame.car_idx_track_surface = vec![0; 3];
+        frame.car_idx_lap_completed = vec![1; 3];
+        frame
+    }
+
+    fn seed_incident_cluster(engine: &mut NarrativeEngine) {
+        for car_idx in 0..3 {
+            engine.car_registry.insert(
+                crate::car_registry::CarState {
+                    car_idx,
+                    car_number: car_idx.to_string(),
+                    driver_name: format!("Car {car_idx}"),
+                    car_class_id: 1,
+                    current_position: car_idx + 1,
+                    current_lap: 1,
+                    lap_dist_pct: 0.500,
+                    on_pit_road: false,
+                    track_surface: 0,
+                    last_lap_time_s: 0.0,
+                    best_lap_time_s: 0.0,
+                    speed_ema_mps: 10.0,
+                    sampler: AnchorSampler::new(10),
+                    opponent_history: Vec::new(),
+                },
+                100,
+            );
+        }
+        engine
+            .incident_cluster
+            .baseline_samples
+            .insert((1, 5), std::collections::VecDeque::from([50.0; 4]));
+        engine.incident_cluster.speed_baseline.insert((1, 5), 50.0);
+    }
+
+    #[test]
+    fn incident_clusters_are_only_evaluated_when_the_cadence_is_due() {
+        let mut engine = NarrativeEngine::new(10);
+        seed_incident_cluster(&mut engine);
+        let frame = incident_cluster_frame();
+
+        let skipped = engine.process_frame_with_incident_cadence(&frame, false);
+        assert!(!skipped
+            .iter()
+            .any(|event| matches!(event, RaceEvent::IncidentCluster { .. })));
+
+        let evaluated = engine.process_frame_with_incident_cadence(&frame, true);
+        assert!(evaluated
+            .iter()
+            .any(|event| matches!(event, RaceEvent::IncidentCluster { .. })));
     }
 
     #[test]

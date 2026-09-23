@@ -5,6 +5,18 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::battle_state::SlopeInfo;
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentParticipant {
+    pub car_idx: u8,
+    pub lap: i32,
+    pub lap_dist_pct: f32,
+    pub speed_mps: f32,
+    pub on_pit_road: bool,
+    pub track_surface: i32,
+    pub in_world: bool,
+}
+
 /// High-level scope of an emitted event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -529,11 +541,15 @@ pub enum RaceEvent {
     IncidentCluster {
         lap: u8,
         session_time: f32,
+        session_tick: i64,
+        incident_id: u32,
         bucket: u8,
         lap_dist_pct_from: f32,
         lap_dist_pct_to: f32,
         car_idxs: Vec<u8>,
+        participants: Vec<IncidentParticipant>,
         severity: f32,
+        severity_normalized: f32,
         /// Most-culpable / dominant car in the incident (lowest car index when
         /// damage data is unavailable).
         primary_car_idx: Option<u8>,
@@ -543,7 +559,12 @@ pub enum RaceEvent {
     IncidentClusterResolved {
         lap: u8,
         session_time: f32,
+        session_tick: i64,
+        incident_id: u32,
         bucket: u8,
+        started_session_time: f32,
+        started_session_tick: i64,
+        car_idxs: Vec<u8>,
     },
     TrafficCompressionZone {
         lap: u8,
