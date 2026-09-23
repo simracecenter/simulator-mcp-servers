@@ -27,7 +27,9 @@ use crate::telemetry_frame::TelemetryFrame;
 /// * `1` — implicit; envelope identity only (`rigId`, `car`).
 /// * `2` — publisher and subject identity on every event, canonical camelCase
 ///   payload keys, unique `eventKey`/`sequence`, normalised incident severity.
-pub const PAYLOAD_CONTRACT_VERSION: u32 = 2;
+/// * `3` — stable incident lifecycle keys, participant state, and resolution
+///   timing for incident clusters.
+pub const PAYLOAD_CONTRACT_VERSION: u32 = 3;
 
 /// Monotonic counter over every event this process builds. Ticks repeat and
 /// several events can share one, so the counter — not the tick — is what makes
@@ -96,7 +98,7 @@ pub struct PublisherEvent {
     /// Monotonic per-process counter, ordering events published on one tick.
     pub sequence: u64,
     /// Unique idempotency key, stable across transport retries of the same
-    /// event: `v2-<subSessionId>-<sessionTick>-<TYPE>-<sequence>`. Unlike a
+    /// event: `v3-<subSessionId>-<sessionTick>-<TYPE>-<sequence>`. Unlike a
     /// key derived from the tick alone, a burst published on one tick does
     /// not collide.
     pub event_key: String,
@@ -226,7 +228,7 @@ pub fn build_event(
     let event_type = race_event.kind().event_type();
     let scope = race_event.event_scope();
     let event_key = format!(
-        "v2-{}-{}-{}-{}",
+        "v3-{}-{}-{}-{}",
         sub_session_id.unwrap_or(0),
         frame.session_tick,
         event_type,
@@ -972,7 +974,9 @@ fn enrich_payload(
             );
         }
         RaceEvent::IncidentCluster {
+            incident_id,
             car_idxs,
+            participants,
             primary_car_idx,
             incident_type,
             lap_dist_pct_from,
@@ -998,11 +1002,50 @@ fn enrich_payload(
                 .map(Value::from)
                 .unwrap_or(Value::Null);
             obj.insert("incidentType".to_owned(), itype);
+            obj.insert(
+                "incidentKey".to_owned(),
+                Value::from(incident_key(*incident_id)),
+            );
+            obj.insert("lifecycleState".to_owned(), Value::from("ACTIVE"));
+            obj.insert(
+                "participantStates".to_owned(),
+                serde_json::to_value(participants).unwrap_or(Value::Array(Vec::new())),
+            );
 
             // Cluster centroid lap distance percentage
             obj.insert(
                 "lapDistPct".to_owned(),
                 json!((lap_dist_pct_from + lap_dist_pct_to) / 2.0),
+            );
+        }
+        RaceEvent::IncidentClusterResolved {
+            incident_id,
+            car_idxs,
+            started_session_time,
+            started_session_tick,
+            session_time,
+            session_tick,
+            ..
+        } => {
+            let involved_cars: Vec<Value> = car_idxs
+                .iter()
+                .map(|&idx| serde_json::to_value(resolve_car(idx, roster)).unwrap_or(Value::Null))
+                .collect();
+            obj.insert("involvedCars".to_owned(), Value::Array(involved_cars));
+            obj.insert(
+                "incidentKey".to_owned(),
+                Value::from(incident_key(*incident_id)),
+            );
+            obj.insert("lifecycleState".to_owned(), Value::from("RESOLVED"));
+            obj.insert(
+                "resolution".to_owned(),
+                json!({
+                    "startedSessionTime": started_session_time,
+                    "startedSessionTick": started_session_tick,
+                    "resolvedSessionTime": session_time,
+                    "resolvedSessionTick": session_tick,
+                    "durationSeconds": (session_time - started_session_time).max(0.0),
+                }),
             );
         }
         RaceEvent::IncidentAlert {
@@ -1053,6 +1096,7 @@ fn enrich_payload(
             trigger_car_idx,
             lap_dist_pct,
             scope,
+            linked_incident_id,
             ..
         } => {
             // Resolve trigger car to a structured CarRef when known.
@@ -1087,9 +1131,19 @@ fn enrich_payload(
                 FlagScope::Unknown => "Yellow flag condition".to_owned(),
             };
             obj.insert("reason".to_owned(), Value::String(reason));
+            if let Some(incident_id) = linked_incident_id {
+                obj.insert(
+                    "linkedIncidentKey".to_owned(),
+                    Value::from(incident_key(*incident_id)),
+                );
+            }
         }
         _ => {}
     }
+}
+
+fn incident_key(incident_id: u32) -> String {
+    format!("{}:incident:{incident_id}", publisher_run_id())
 }
 
 /// Threshold above which a raw f32 telemetry value is treated as a
