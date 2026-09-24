@@ -384,7 +384,7 @@ fn build_and_validate(raw: RawConfig) -> Result<PublisherConfig, ConfigError> {
 
     let destination_raw = raw.publisher.destination.filter(|s| !s.is_empty());
     let destination = match destination_raw.as_deref() {
-        None => Destination::RaceControl,
+        None => Destination::Local,
         Some(s) => Destination::parse(s).ok_or_else(|| {
             ConfigError::Validation(format!(
                 "[publisher] ERROR: unknown destination '{s}'. \
@@ -504,6 +504,7 @@ client_secret = "secret-789"
 scope         = "api://rc/.default"
 
 [publisher]
+destination           = "racecontrol"
 rc_api_url            = "https://api.example.com"
 batch_interval_ms     = 250
 heartbeat_interval_ms = 5000
@@ -524,13 +525,16 @@ incident_cluster_interval_ms = 125
     }
 
     #[test]
-    fn defaults_applied_when_publisher_section_absent() {
+    fn defaults_applied_for_racecontrol_destination() {
         let cfg = parse(
             r#"
 [auth]
 tenant_id     = "t"
 client_id     = "c"
 client_secret = "s"
+
+[publisher]
+destination = "racecontrol"
 "#,
         );
         assert_eq!(
@@ -553,6 +557,7 @@ client_id     = "c"
 client_secret = "s"
 
 [publisher]
+destination           = "racecontrol"
 heartbeat_interval_ms = 0
 "#,
         );
@@ -564,6 +569,7 @@ heartbeat_interval_ms = 0
         let mut raw = RawConfig::default();
         raw.auth.tenant_id = Some("t".to_owned());
         raw.auth.client_secret = Some("s".to_owned());
+        raw.publisher.destination = Some("racecontrol".to_owned());
         // client_id intentionally absent
         let err = build_and_validate(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Validation(_)));
@@ -589,7 +595,7 @@ heartbeat_interval_ms = 0
                 cert_thumbprint: None,
             },
             publisher: RawPublisher {
-                destination: None,
+                destination: Some("racecontrol".to_owned()),
                 rc_api_url: Some("https://original.com".to_owned()),
                 batch_interval_ms: Some(500),
                 heartbeat_interval_ms: Some(15_000),
@@ -611,18 +617,33 @@ heartbeat_interval_ms = 0
     // ── Destination / local ────────────────────────────────────────────────
 
     #[test]
-    fn destination_defaults_to_racecontrol() {
+    fn destination_defaults_to_local() {
         let cfg = parse(
+            r#"
+[local]
+url   = "https://collector.internal:8443"
+token = "tok"
+"#,
+        );
+        assert_eq!(cfg.destination, Destination::Local);
+        assert!(cfg.auth.is_none());
+        assert!(cfg.local.is_some());
+    }
+
+    #[test]
+    fn no_destination_without_local_table_errors() {
+        let raw: RawConfig = toml::from_str(
             r#"
 [auth]
 tenant_id     = "t"
 client_id     = "c"
 client_secret = "s"
 "#,
-        );
-        assert_eq!(cfg.destination, Destination::RaceControl);
-        assert!(cfg.auth.is_some());
-        assert!(cfg.local.is_none());
+        )
+        .expect("valid toml");
+        let err = build_and_validate(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+        assert!(err.to_string().contains("local.url"));
     }
 
     #[test]
