@@ -779,6 +779,15 @@ fn incident_cluster_includes_all_car_refs() {
         severity_normalized: 0.16666667,
         primary_car_idx: Some(1),
         incident_type: Some("Incident".to_owned()),
+        detected_session_time: 371.5,
+        trigger_car_idx: Some(1),
+        hard_events: vec![publisher::race_event::IncidentHardEvent {
+            car_idx: 1,
+            session_time: 370.0,
+            lap_dist_pct: 0.76,
+            reason: "speed_drop".to_owned(),
+        }],
+        corroboration: Some("slowed_and_hard_event".to_owned()),
     };
 
     let env = build_event(
@@ -793,6 +802,20 @@ fn incident_cluster_includes_all_car_refs() {
     let json = normalized_event_json(&env);
 
     assert_envelope_contract(&json, "INCIDENT_CLUSTER");
+
+    // Onset vs detection and corroboration metadata
+    assert_eq!(json["payload"]["onsetSessionTime"], 370.0);
+    assert_eq!(json["payload"]["sessionTime"], 370.0);
+    assert_eq!(json["payload"]["detectedSessionTime"], 371.5);
+    assert_eq!(json["payload"]["triggerCarIdx"], 1);
+    assert_eq!(json["payload"]["triggerCar"]["carIdx"], 1);
+    assert_eq!(json["payload"]["corroboration"], "slowed_and_hard_event");
+    let hard_events = json["payload"]["hardEvents"].as_array().unwrap();
+    assert_eq!(hard_events.len(), 1);
+    assert_eq!(hard_events[0]["carIdx"], 1);
+    assert_eq!(hard_events[0]["sessionTime"], 370.0);
+    assert!((hard_events[0]["lapDistPct"].as_f64().unwrap() - 0.76).abs() < 1e-4);
+    assert_eq!(hard_events[0]["reason"], "speed_drop");
 
     // Numeric car_idxs kept for backward compatibility
     assert!(json["payload"]["car_idxs"].is_array());
@@ -859,6 +882,10 @@ fn incident_resolution_reuses_stable_incident_key() {
         severity_normalized: 0.16666667,
         primary_car_idx: Some(1),
         incident_type: Some("Incident".to_owned()),
+        detected_session_time: 370.0,
+        trigger_car_idx: Some(1),
+        hard_events: Vec::new(),
+        corroboration: Some("slowed_and_hard_event".to_owned()),
     };
     let resolved = RaceEvent::IncidentClusterResolved {
         lap: 6,

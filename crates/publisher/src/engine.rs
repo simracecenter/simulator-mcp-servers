@@ -300,6 +300,7 @@ impl NarrativeEngine {
                 frame.session_time,
                 frame.session_tick,
                 frame.session_flags & CAUTION != 0,
+                self.basic_incident.recent_hard_events(),
             ));
         }
         self.tire_degradation.update_ema(frame);
@@ -1222,6 +1223,15 @@ mod tests {
             .iter()
             .any(|event| matches!(event, RaceEvent::IncidentCluster { .. })));
 
+        // A cluster now needs a corroborating hard event in (or one bucket
+        // downstream of) the slowed bucket, within the last 3 s.
+        engine.basic_incident.push_hard_event_for_test(
+            1,
+            frame.session_time - 0.5,
+            frame.session_tick,
+            0.500,
+            "speed_drop",
+        );
         let evaluated = engine.process_frame_with_incident_cadence(&frame, true);
         assert!(evaluated
             .iter()
