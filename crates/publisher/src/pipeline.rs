@@ -2,8 +2,10 @@
 
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#[cfg(any(target_os = "windows", test))]
 const ROSTER_RESYNC_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+#[cfg(any(target_os = "windows", test))]
 fn roster_resync_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last.is_none_or(|last| now.duration_since(last) >= ROSTER_RESYNC_INTERVAL)
 }
