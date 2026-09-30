@@ -72,12 +72,14 @@ impl CarRef {
 /// Immutable roster built from one parse of the `SessionInfo` YAML.
 pub struct SessionRoster {
     cars: HashMap<u8, CarRef>,
+    player_car_idx: Option<u8>,
 }
 
 impl SessionRoster {
     pub fn empty() -> Self {
         Self {
             cars: HashMap::new(),
+            player_car_idx: None,
         }
     }
 
@@ -87,7 +89,19 @@ impl SessionRoster {
     {
         Self {
             cars: cars.into_iter().map(|car| (car.car_idx, car)).collect(),
+            player_car_idx: None,
         }
+    }
+
+    pub fn player_car_idx(&self) -> Option<u8> {
+        self.player_car_idx
+    }
+
+    /// The roster and telemetry frame belong to the same session only when
+    /// they agree on the player's car. `None` means the YAML omitted the key.
+    pub fn describes_player(&self, frame_player_car_idx: u8) -> bool {
+        self.player_car_idx
+            .is_none_or(|idx| idx == frame_player_car_idx)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &CarRef> {
@@ -126,6 +140,7 @@ impl SessionInfoParser {
     /// `DriverInfo.Drivers` key is missing.
     pub fn build(yaml_str: &str) -> Result<SessionRoster, serde_yaml::Error> {
         let root: YamlRoot = serde_yaml::from_str(yaml_str)?;
+        let player_car_idx = root.driver_info.driver_car_idx;
         let cars = root
             .driver_info
             .drivers
@@ -146,7 +161,10 @@ impl SessionInfoParser {
                 (d.car_idx, car_ref)
             })
             .collect();
-        Ok(SessionRoster { cars })
+        Ok(SessionRoster {
+            cars,
+            player_car_idx,
+        })
     }
 }
 
@@ -521,6 +539,8 @@ impl YamlSession {
 
 #[derive(serde::Deserialize)]
 struct YamlDriverInfo {
+    #[serde(rename = "DriverCarIdx", default)]
+    driver_car_idx: Option<u8>,
     #[serde(rename = "Drivers")]
     drivers: Vec<YamlDriver>,
 }
@@ -616,6 +636,31 @@ mod tests {
     fn parse_returns_all_drivers() {
         let roster = SessionInfoParser::build(FIXTURE_YAML).expect("parse should succeed");
         assert_eq!(roster.len(), 4);
+    }
+
+    #[test]
+    fn parses_player_car_idx() {
+        let roster = SessionInfoParser::build(FIXTURE_YAML).expect("parse");
+        assert_eq!(roster.player_car_idx(), Some(0));
+    }
+
+    #[test]
+    fn missing_player_car_idx_is_none() {
+        let yaml = r#"
+DriverInfo:
+    Drivers:
+        - { CarIdx: 0, UserName: Driver, CarNumber: "1" }
+"#;
+        let roster = SessionInfoParser::build(yaml).expect("parse");
+        assert_eq!(roster.player_car_idx(), None);
+    }
+
+    #[test]
+    fn describes_player_matches_mismatches_and_missing_index() {
+        let roster = SessionInfoParser::build(FIXTURE_YAML).expect("parse");
+        assert!(roster.describes_player(0));
+        assert!(!roster.describes_player(1));
+        assert!(SessionRoster::empty().describes_player(1));
     }
 
     #[test]
