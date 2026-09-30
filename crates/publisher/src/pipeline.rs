@@ -451,56 +451,6 @@ pub fn run_pipeline(
                             s.session_laps = session_meta.session_laps.clone();
                         }
 
-                        // Emit HELLO for this session if lifecycle was just reset
-                        // (first parse or session transition). Guard on sub_session_id > 0
-                        // so the envelope is never posted with subSessionId=0 — the
-                        // tick_result guard would block the batch anyway, but building
-                        // and queueing a HELLO with race_session_id="0" could leave
-                        // a stale event in the transport queue after the first transition.
-                        if lifecycle.is_fresh() && sub_session_id > 0 {
-                            if emit_iracing_connected {
-                                let connected = RaceEvent::IracingConnected {
-                                    lap: frame.lap,
-                                    session_time: frame.session_time,
-                                };
-                                log_event(&connected, roster_cache.roster(), &frame);
-                                let pe = build_event(
-                                    &connected,
-                                    &frame,
-                                    roster_cache.roster(),
-                                    &race_session_id,
-                                    &rig_id,
-                                    current_session_meta.as_ref(),
-                                    Some(sub_session_id),
-                                );
-                                delivery.enqueue(pe);
-                                status.lock().unwrap().events_enqueued_total += 1;
-                                emit_iracing_connected = false;
-                            }
-
-                            let hello = lifecycle.on_activate(frame.lap, frame.session_time);
-                            let pe = build_event(
-                                &hello,
-                                &frame,
-                                roster_cache.roster(),
-                                &race_session_id,
-                                &rig_id,
-                                current_session_meta.as_ref(),
-                                (sub_session_id > 0).then_some(sub_session_id),
-                            );
-                            if pe.scope == EventScope::CarScoped
-                                && pe
-                                    .car
-                                    .as_ref()
-                                    .is_some_and(|car| car.driver_name.is_empty())
-                            {
-                                pending_events.push(pe);
-                            } else {
-                                delivery.enqueue(pe);
-                                status.lock().unwrap().events_enqueued_total += 1;
-                            }
-                        }
-
                         last_session_num = Some(frame.session_num);
                     } else {
                         session_info_read_failures = session_info_read_failures.saturating_add(1);
@@ -542,6 +492,56 @@ pub fn run_pipeline(
                     }
                     last_frame = Some(frame);
                     continue;
+                }
+
+                // Emit HELLO for this session if lifecycle was just reset
+                // (first parse or session transition). Guard on sub_session_id > 0
+                // so the envelope is never posted with subSessionId=0 — the
+                // tick_result guard would block the batch anyway, but building
+                // and queueing a HELLO with race_session_id="0" could leave
+                // a stale event in the transport queue after the first transition.
+                if lifecycle.is_fresh() && sub_session_id > 0 {
+                    if emit_iracing_connected {
+                        let connected = RaceEvent::IracingConnected {
+                            lap: frame.lap,
+                            session_time: frame.session_time,
+                        };
+                        log_event(&connected, roster_cache.roster(), &frame);
+                        let pe = build_event(
+                            &connected,
+                            &frame,
+                            roster_cache.roster(),
+                            &race_session_id,
+                            &rig_id,
+                            current_session_meta.as_ref(),
+                            Some(sub_session_id),
+                        );
+                        delivery.enqueue(pe);
+                        status.lock().unwrap().events_enqueued_total += 1;
+                        emit_iracing_connected = false;
+                    }
+
+                    let hello = lifecycle.on_activate(frame.lap, frame.session_time);
+                    let pe = build_event(
+                        &hello,
+                        &frame,
+                        roster_cache.roster(),
+                        &race_session_id,
+                        &rig_id,
+                        current_session_meta.as_ref(),
+                        (sub_session_id > 0).then_some(sub_session_id),
+                    );
+                    if pe.scope == EventScope::CarScoped
+                        && pe
+                            .car
+                            .as_ref()
+                            .is_some_and(|car| car.driver_name.is_empty())
+                    {
+                        pending_events.push(pe);
+                    } else {
+                        delivery.enqueue(pe);
+                        status.lock().unwrap().events_enqueued_total += 1;
+                    }
                 }
 
                 // The session clock restarting inside one sub-session is a
