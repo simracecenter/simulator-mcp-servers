@@ -2,6 +2,12 @@
 
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+const ROSTER_RESYNC_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn roster_resync_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|last| now.duration_since(last) >= ROSTER_RESYNC_INTERVAL)
+}
+
 #[cfg(target_os = "windows")]
 pub fn run_pipeline(
     cfg: &crate::config::PublisherConfig,
@@ -149,6 +155,8 @@ pub fn run_pipeline(
     let mut session_lifecycle = SessionLifecycleTracker::new();
     let mut race_session_id = String::from("0");
     let mut sub_session_id: i64 = 0;
+    let mut last_roster_resync: Option<Instant> = None;
+    let mut roster_was_out_of_sync = false;
     let mut last_session_num: Option<i32> = None;
     // `(sub_session_id, session_num, session_time)` of the last frame seen, for
     // detecting a session clock restart inside one sub-session.
@@ -252,6 +260,7 @@ pub fn run_pipeline(
             incident_cluster = IntervalScheduler::new(cfg.publisher.incident_cluster_interval_ms);
             pending_events.clear();
             sub_session_id = 0;
+            last_roster_resync = None;
             last_session_num = None;
             last_session_clock = None;
             current_session_meta = None;
@@ -279,6 +288,15 @@ pub fn run_pipeline(
                             && prev_num == frame.session_num
                             && frame.session_time + SESSION_CLOCK_ROLLBACK_S < prev_t
                     });
+                let now = Instant::now();
+                let roster_out_of_sync = roster_cache
+                    .roster()
+                    .is_some_and(|r| !r.describes_player(frame.player_car_idx));
+                let roster_resync_due_now =
+                    roster_out_of_sync && roster_resync_due(last_roster_resync, now);
+                if roster_resync_due_now {
+                    last_roster_resync = Some(now);
+                }
 
                 // Refresh roster + session metadata when SessionInfo changes.
                 // Also force a refresh when SessionNum changes so practice/qualify/race
@@ -286,6 +304,7 @@ pub fn run_pipeline(
                 if session_num_changed
                     || clock_rolled_back
                     || roster_cache.needs_update(frame.session_info_update)
+                    || roster_resync_due_now
                 {
                     if let Some(yaml) = reader.read_session_info() {
                         session_info_read_failures = 0;
@@ -345,6 +364,7 @@ pub fn run_pipeline(
                                 engine = NarrativeEngine::new(10);
                                 lifecycle = LifecyclePublisher::new(env!("CARGO_PKG_VERSION"));
                                 roster_cache = RosterCache::new();
+                                last_roster_resync = None;
                                 session_lifecycle = SessionLifecycleTracker::new();
                                 pending_events.clear();
                                 driver_material = IntervalScheduler::new(
@@ -494,6 +514,34 @@ pub fn run_pipeline(
                             );
                         }
                     }
+                }
+
+                let roster_out_of_sync = roster_cache
+                    .roster()
+                    .is_some_and(|r| !r.describes_player(frame.player_car_idx));
+                if roster_out_of_sync && !roster_was_out_of_sync {
+                    if let Some(roster) = roster_cache.roster() {
+                        if let Some(roster_player_car_idx) = roster.player_car_idx() {
+                            log_warn!(
+                                "[publisher] roster describes carIdx {roster_player_car_idx} but telemetry player is carIdx {} — holding events until SessionInfo catches up",
+                                frame.player_car_idx
+                            );
+                        }
+                    }
+                } else if !roster_out_of_sync && roster_was_out_of_sync {
+                    log_info!("[publisher] roster and telemetry player are synchronized");
+                }
+                roster_was_out_of_sync = roster_out_of_sync;
+                if roster_out_of_sync {
+                    {
+                        let mut s = status.lock().unwrap();
+                        s.current_lap = frame.lap;
+                        s.session_tick = frame.session_tick;
+                        s.session_time_secs = frame.session_time as f64;
+                        copy_delivery_stats(&mut s, &delivery);
+                    }
+                    last_frame = Some(frame);
+                    continue;
                 }
 
                 // The session clock restarting inside one sub-session is a
@@ -949,5 +997,34 @@ fn log_event(
             log_info!("[publisher] OVERTAKE_FOR_LEAD — #{player} passed #{overtaken}");
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::roster_resync_due;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn roster_resync_is_due_without_a_previous_attempt() {
+        assert!(roster_resync_due(None, Instant::now()));
+    }
+
+    #[test]
+    fn roster_resync_is_not_due_before_the_interval() {
+        let now = Instant::now();
+        assert!(!roster_resync_due(
+            Some(now - Duration::from_millis(249)),
+            now
+        ));
+    }
+
+    #[test]
+    fn roster_resync_is_due_after_the_interval() {
+        let now = Instant::now();
+        assert!(roster_resync_due(
+            Some(now - Duration::from_millis(251)),
+            now
+        ));
     }
 }
