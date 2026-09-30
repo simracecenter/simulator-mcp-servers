@@ -978,9 +978,11 @@ fn enrich_payload(
             car_idxs,
             participants,
             primary_car_idx,
+            trigger_car_idx,
             incident_type,
             lap_dist_pct_from,
             lap_dist_pct_to,
+            session_time,
             ..
         } => {
             // Resolve all involved cars to a CarRef array
@@ -1017,6 +1019,15 @@ fn enrich_payload(
                 "lapDistPct".to_owned(),
                 json!((lap_dist_pct_from + lap_dist_pct_to) / 2.0),
             );
+
+            // Incident onset vs detection: `sessionTime` is the earliest hard
+            // event's time (where a replay should seek); `detectedSessionTime`
+            // is when the detector fired.
+            obj.insert("onsetSessionTime".to_owned(), json!(session_time));
+            let trigger = trigger_car_idx
+                .map(|idx| serde_json::to_value(resolve_car(idx, roster)).unwrap_or(Value::Null))
+                .unwrap_or(Value::Null);
+            obj.insert("triggerCar".to_owned(), trigger);
         }
         RaceEvent::IncidentClusterResolved {
             incident_id,

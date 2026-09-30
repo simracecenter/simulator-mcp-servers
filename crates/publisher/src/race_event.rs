@@ -5,6 +5,18 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::battle_state::SlopeInfo;
 
+/// A hard incident signal (one emitted `INCIDENT_ALERT`) that corroborated
+/// an [`RaceEvent::IncidentCluster`]. Carried on the cluster so a consumer
+/// can seek a replay to the event's `session_time` and focus `car_idx`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentHardEvent {
+    pub car_idx: u8,
+    pub session_time: f32,
+    pub lap_dist_pct: f32,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncidentParticipant {
@@ -550,11 +562,23 @@ pub enum RaceEvent {
         participants: Vec<IncidentParticipant>,
         severity: f32,
         severity_normalized: f32,
-        /// Most-culpable / dominant car in the incident (lowest car index when
-        /// damage data is unavailable).
+        /// Most-culpable / dominant car in the incident — the car of the
+        /// earliest corroborating hard event.
         primary_car_idx: Option<u8>,
         /// Coarse classification of the incident (e.g. `"Incident"`).
         incident_type: Option<String>,
+        /// Session time at which the detector emitted the cluster.
+        /// `session_time` is the incident onset (earliest hard event); a
+        /// replay seek should use `session_time`, not this.
+        detected_session_time: f32,
+        /// Car whose hard event triggered the cluster — same as
+        /// `primary_car_idx`, named for the replay/focus consumer.
+        trigger_car_idx: Option<u8>,
+        /// Every hard event that corroborated this cluster.
+        hard_events: Vec<IncidentHardEvent>,
+        /// How the cluster was corroborated:
+        /// `"slowed_and_hard_event"` or `"multiple_hard_events"`.
+        corroboration: Option<String>,
     },
     IncidentClusterResolved {
         lap: u8,
