@@ -127,6 +127,34 @@
     background: var(--apex);
     cursor: pointer;
   }
+  .director-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 8px 0;
+  }
+  .director-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .publishing-tag {
+    color: var(--telemetry);
+    font-size: .7rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .pairing .secondary-action {
+    flex: none;
+    border: 1px solid var(--muted);
+    color: var(--muted);
+    background: transparent;
+  }
+  #unpair {
+    margin-top: 12px;
+  }
   .pairing button:disabled {
     opacity: .45;
     cursor: not-allowed;
@@ -183,8 +211,12 @@
     <div class="pairing-value" id="pairing-code" data-testid="pairing-code">—</div>
     <div class="pairing-label">Certificate fingerprint</div>
     <div class="pairing-value" id="cert-fingerprint" data-testid="cert-fingerprint">—</div>
+    <div class="pairing-label">Publishing to</div>
+    <div class="pairing-value" id="publishing-to" data-testid="publishing-to">Not configured</div>
+    <div class="pairing-label">Paired Directors</div>
+    <div id="director-list" data-testid="director-list"></div>
     <div class="pairing-value" id="pairing-status" data-testid="pairing-status">Not paired</div>
-    <button id="unpair" data-testid="unpair" type="button">CLEAR DIRECTORS</button>
+    <button id="unpair" class="secondary-action" data-testid="unpair" type="button">CLEAR DIRECTORS</button>
   </div>
   <div class="pairing" id="wheel-controls" data-testid="wheel-controls">
     <h2>WHEEL BUTTONS</h2>
@@ -236,6 +268,8 @@ const pairingEl = document.getElementById('rig-pairing');
 const wheelControlsEl = document.getElementById('wheel-controls');
 const pairingCodeEl = document.getElementById('pairing-code');
 const fingerprintEl = document.getElementById('cert-fingerprint');
+const publishingToEl = document.getElementById('publishing-to');
+const directorListEl = document.getElementById('director-list');
 const pairingStatusEl = document.getElementById('pairing-status');
 const unpairEl = document.getElementById('unpair');
 const wheelStatusEl = document.getElementById('wheel-status');
@@ -263,18 +297,55 @@ function setActive(sim, connected, toolNames) {
 function setPairing(data) {
   pairingCodeEl.textContent = data.pairingCode || '—';
   fingerprintEl.textContent = data.certFingerprint || '—';
-  const directors = data.directorNames || (data.directorName ? [data.directorName] : []);
-  pairingStatusEl.textContent = directors.length
-    ? ('Paired with ' + directors.join(', '))
-    : 'Not paired';
+  const target = data.publishingTo;
+  publishingToEl.textContent = target
+    ? (target.directorName
+      ? target.directorName + ' (' + target.ingestHost + ')'
+      : target.ingestHost + ' (not a paired Director)')
+    : 'Not configured';
+  const directors = Array.isArray(data.directors) ? data.directors : [];
+  directorListEl.replaceChildren();
+  pairingStatusEl.textContent = directors.length ? '' : 'Not paired';
+  for (const director of directors) {
+    const row = document.createElement('div');
+    row.className = 'director-row';
+    row.setAttribute('data-testid', 'director-row');
+
+    const name = document.createElement('div');
+    name.className = 'director-name';
+    const label = document.createElement('span');
+    label.textContent = director.name;
+    name.appendChild(label);
+    if (target && target.directorName === director.name) {
+      const tag = document.createElement('span');
+      tag.className = 'publishing-tag';
+      tag.textContent = 'publishing';
+      name.appendChild(tag);
+    }
+
+    const remove = document.createElement('button');
+    remove.className = 'secondary-action';
+    remove.setAttribute('data-testid', 'remove-director');
+    remove.type = 'button';
+    remove.textContent = 'REMOVE';
+    remove.addEventListener('click', () => revokeDirector(director.id));
+
+    row.appendChild(name);
+    row.appendChild(remove);
+    directorListEl.appendChild(row);
+  }
+}
+
+async function renderStatus(data) {
+  setActive(data.sim, data.connected, data.toolNames);
+  setPairing(data);
+  await loadControls();
 }
 
 async function loadStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
-  setActive(data.sim, data.connected, data.toolNames);
-  setPairing(data);
-  await loadControls();
+  await renderStatus(data);
 }
 
 async function loadControls() {
@@ -330,14 +401,23 @@ async function selectSim(sim) {
     body: JSON.stringify({ sim })
   });
   const data = await res.json();
-  setActive(data.sim, data.connected, data.toolNames);
-  setPairing(data);
-  await loadControls();
+  await renderStatus(data);
+}
+
+async function revokeDirector(id) {
+  const res = await fetch('/api/revoke-director', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  });
+  if (!res.ok) return;
+  await renderStatus(await res.json());
 }
 
 async function unpair() {
+  if (!window.confirm('Remove all paired Directors?')) return;
   const res = await fetch('/api/unpair', { method: 'POST' });
-  setPairing(await res.json());
+  await renderStatus(await res.json());
 }
 
 async function postControl(path, action) {

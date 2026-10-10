@@ -8,6 +8,7 @@
 //! - `GET /healthz`       — liveness check.
 //! - `GET /api/status`    — active sim, connection status, and live tool names.
 //! - `POST /api/sim`      — persist selection and hot-swap the in-process handler.
+//! - `POST /api/revoke-director` — revoke one paired Director grant.
 //! - `GET /api/controls`  — wheel input availability, bindings, and status.
 //! - `POST /api/controls/learn` — learn a wheel-button binding.
 //! - `POST /api/controls/cancel` — cancel wheel-button learning.
@@ -29,12 +30,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use mcp_core::{JsonRpcRequest, McpHandler};
 use publisher::controls::ControlAction;
+use publisher_mcp::{PublisherConfig, PublisherConfigStore};
 
 use crate::config::{self, Sim};
-use crate::pairing::PairingState;
+use crate::pairing::{PairedDirector, PairingState};
 use crate::runner::{build_handler, SwappableHandler, TransportSupervisor};
 use crate::wheel_controls::WheelControls;
 
@@ -43,6 +46,7 @@ pub struct SettingsState {
     pub current_sim: RwLock<Sim>,
     pub handler: Arc<SwappableHandler>,
     pub pairing: Arc<PairingState>,
+    pub publisher_config: Arc<dyn PublisherConfigStore>,
     pub supervisor: Arc<TransportSupervisor>,
     pub controls: Arc<WheelControls>,
 }
@@ -52,6 +56,7 @@ impl SettingsState {
         handler: Arc<SwappableHandler>,
         sim: Sim,
         pairing: Arc<PairingState>,
+        publisher_config: Arc<dyn PublisherConfigStore>,
         supervisor: Arc<TransportSupervisor>,
         controls: Arc<WheelControls>,
     ) -> Arc<Self> {
@@ -59,6 +64,7 @@ impl SettingsState {
             current_sim: RwLock::new(sim),
             handler,
             pairing,
+            publisher_config,
             supervisor,
             controls,
         })
@@ -68,6 +74,11 @@ impl SettingsState {
 #[derive(Deserialize)]
 struct SimRequest {
     sim: Sim,
+}
+
+#[derive(Deserialize)]
+struct RevokeDirectorRequest {
+    id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +98,15 @@ struct Status {
     director_names: Vec<String>,
     cert_fingerprint: Option<String>,
     device_id: Option<String>,
+    directors: Vec<PairedDirector>,
+    publishing_to: Option<PublishTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PublishTarget {
+    ingest_host: String,
+    director_name: Option<String>,
 }
 
 const INDEX_HTML: &str = include_str!("settings_page.html");
@@ -105,6 +125,7 @@ pub async fn run(bind: &str, state: Arc<SettingsState>) -> std::io::Result<()> {
         .route("/api/controls/cancel", post(api_controls_cancel))
         .route("/api/controls/clear", post(api_controls_clear))
         .route("/api/unpair", post(api_unpair))
+        .route("/api/revoke-director", post(api_revoke_director))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -130,7 +151,15 @@ async fn healthz() -> Json<Value> {
 
 async fn api_status(State(state): State<Arc<SettingsState>>) -> Json<Status> {
     let sim = *state.current_sim.read().await;
-    Json(build_status(&state.handler, sim, &state.pairing).await)
+    Json(
+        build_status(
+            &state.handler,
+            sim,
+            &state.pairing,
+            state.publisher_config.as_ref(),
+        )
+        .await,
+    )
 }
 
 async fn api_controls(
@@ -215,8 +244,36 @@ async fn api_sim(
     }
     let sim = *state.current_sim.read().await;
     Ok(Json(
-        build_status(&state.handler, sim, &state.pairing).await,
+        build_status(
+            &state.handler,
+            sim,
+            &state.pairing,
+            state.publisher_config.as_ref(),
+        )
+        .await,
     ))
+}
+
+async fn api_revoke_director(
+    State(state): State<Arc<SettingsState>>,
+    Json(body): Json<RevokeDirectorRequest>,
+) -> Result<Json<Status>, (StatusCode, String)> {
+    match state.pairing.revoke_director(body.id) {
+        Ok(true) => {
+            let sim = *state.current_sim.read().await;
+            Ok(Json(
+                build_status(
+                    &state.handler,
+                    sim,
+                    &state.pairing,
+                    state.publisher_config.as_ref(),
+                )
+                .await,
+            ))
+        }
+        Ok(false) => Err((StatusCode::NOT_FOUND, "Director not found".to_string())),
+        Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error)),
+    }
 }
 
 async fn api_unpair(
@@ -228,27 +285,53 @@ async fn api_unpair(
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
     let sim = *state.current_sim.read().await;
     Ok(Json(
-        build_status(&state.handler, sim, &state.pairing).await,
+        build_status(
+            &state.handler,
+            sim,
+            &state.pairing,
+            state.publisher_config.as_ref(),
+        )
+        .await,
     ))
 }
 
-async fn build_status(handler: &SwappableHandler, sim: Sim, pairing: &PairingState) -> Status {
+async fn build_status(
+    handler: &SwappableHandler,
+    sim: Sim,
+    pairing: &PairingState,
+    publisher_config: &dyn PublisherConfigStore,
+) -> Status {
     let connected = get_connected(handler, sim).await;
     let tool_names = get_tool_names(handler).await;
-    let (pairing_code, paired, director_name, director_names, cert_fingerprint, device_id) =
-        if sim == Sim::Publisher {
-            let director_names = pairing.director_names();
-            (
-                Some(pairing.pairing_code()),
-                !director_names.is_empty(),
-                director_names.first().cloned(),
-                director_names,
-                Some(pairing.fingerprint().to_string()),
-                pairing.device_id().map(|id| id.to_string()),
-            )
-        } else {
-            (None, false, None, Vec::new(), None, None)
-        };
+    let (
+        pairing_code,
+        paired,
+        director_name,
+        director_names,
+        cert_fingerprint,
+        device_id,
+        directors,
+        publishing_to,
+    ) = if sim == Sim::Publisher {
+        let directors = pairing.directors();
+        let director_names = pairing.director_names();
+        let publishing_to = publisher_config
+            .load()
+            .ok()
+            .and_then(|config| publish_target(&config, &directors));
+        (
+            Some(pairing.pairing_code()),
+            !directors.is_empty(),
+            director_names.first().cloned(),
+            director_names,
+            Some(pairing.fingerprint().to_string()),
+            pairing.device_id().map(|id| id.to_string()),
+            directors,
+            publishing_to,
+        )
+    } else {
+        (None, false, None, Vec::new(), None, None, Vec::new(), None)
+    };
     Status {
         sim: sim.to_string(),
         connected,
@@ -259,7 +342,39 @@ async fn build_status(handler: &SwappableHandler, sim: Sim, pairing: &PairingSta
         director_names,
         cert_fingerprint,
         device_id,
+        directors,
+        publishing_to,
     }
+}
+
+fn publish_target(config: &PublisherConfig, directors: &[PairedDirector]) -> Option<PublishTarget> {
+    let ingest_url = config.ingest_url.as_deref()?;
+    let authority = ingest_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(ingest_url);
+    let ingest_host = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let director_name = config
+        .cert_fingerprint
+        .as_deref()
+        .and_then(|fingerprint| publisher::config::normalise_fingerprint(fingerprint).ok())
+        .and_then(|fingerprint| {
+            directors.iter().find_map(|director| {
+                publisher::config::normalise_fingerprint(&director.fingerprint)
+                    .ok()
+                    .filter(|director_fingerprint| director_fingerprint == &fingerprint)
+                    .map(|_| director.name.clone())
+            })
+        });
+
+    Some(PublishTarget {
+        ingest_host,
+        director_name,
+    })
 }
 
 async fn get_connected(handler: &SwappableHandler, sim: Sim) -> bool {
@@ -323,6 +438,85 @@ mod tests {
     use crate::wheel_controls::WheelControls;
     use publisher::controls::{load_controls, save_controls, ButtonBinding, ControlsConfig};
 
+    fn director(name: &str, fingerprint: &str) -> PairedDirector {
+        PairedDirector {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            fingerprint: fingerprint.to_string(),
+            paired_at: "123".to_string(),
+        }
+    }
+
+    fn publisher_config(
+        ingest_url: Option<&str>,
+        cert_fingerprint: Option<&str>,
+    ) -> PublisherConfig {
+        PublisherConfig {
+            ingest_url: ingest_url.map(str::to_string),
+            cert_fingerprint: cert_fingerprint.map(str::to_string),
+            driver_display_name: None,
+        }
+    }
+
+    #[test]
+    fn publish_target_is_absent_without_ingest_url() {
+        assert_eq!(publish_target(&publisher_config(None, None), &[]), None);
+    }
+
+    #[test]
+    fn publish_target_matches_normalized_fingerprint() {
+        let fingerprint = "ab".repeat(32);
+        let colon_fingerprint = fingerprint
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                String::from_utf8(pair.to_vec())
+                    .unwrap()
+                    .to_ascii_uppercase()
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+        let config = publisher_config(
+            Some("https://director.example/ingest"),
+            Some(&colon_fingerprint),
+        );
+
+        let target =
+            publish_target(&config, &[director("Primary Director", &fingerprint)]).unwrap();
+
+        assert_eq!(
+            target,
+            PublishTarget {
+                ingest_host: "director.example".to_string(),
+                director_name: Some("Primary Director".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn publish_target_keeps_unmatched_fingerprint_unpaired() {
+        let config = publisher_config(
+            Some("https://director.example/ingest"),
+            Some(&"aa".repeat(32)),
+        );
+
+        let target =
+            publish_target(&config, &[director("Other Director", &"bb".repeat(32))]).unwrap();
+
+        assert_eq!(target.director_name, None);
+    }
+
+    #[test]
+    fn publish_target_includes_port_and_discards_path() {
+        let target = publish_target(
+            &publisher_config(Some("https://director.example:8443/ingest/events"), None),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(target.ingest_host, "director.example:8443");
+    }
+
     fn test_state(sim: Sim) -> Arc<SettingsState> {
         let relay = Arc::new(publisher_mcp::ControlRelay::new());
         let controls = Arc::new(WheelControls::new(Arc::clone(&relay)));
@@ -342,7 +536,14 @@ mod tests {
             handler.clone(),
             pairing.clone(),
         ));
-        SettingsState::new(handler, sim, pairing, supervisor, controls)
+        SettingsState::new(
+            handler,
+            sim,
+            pairing,
+            Arc::new(crate::config::FileConfigStore),
+            supervisor,
+            controls,
+        )
     }
 
     fn isolated_appdata(label: &str) -> std::path::PathBuf {
