@@ -303,6 +303,22 @@ impl PublisherEngine for InProcessEngine {
     }
 }
 
+#[cfg(not(windows))]
+pub struct UnsupportedEngine;
+
+#[cfg(not(windows))]
+impl PublisherEngine for UnsupportedEngine {
+    fn start(&self, _spec: LaunchSpec) -> Result<(), String> {
+        Err("publisher engine requires Windows (iRacing shared memory)".to_string())
+    }
+
+    fn stop(&self) {}
+
+    fn snapshot(&self) -> EngineSnapshot {
+        EngineSnapshot::default()
+    }
+}
+
 #[cfg(test)]
 mod control_relay_tests {
     use super::ControlRelay;
@@ -343,21 +359,5 @@ mod control_relay_tests {
 
         assert!(!relay.send(simulated_request(ControlAction::ApproveNo, 42)));
         assert!(!relay.send(simulated_request(ControlAction::ApproveNo, 43)));
-    }
-}
-
-#[cfg(not(windows))]
-pub struct UnsupportedEngine;
-
-#[cfg(not(windows))]
-impl PublisherEngine for UnsupportedEngine {
-    fn start(&self, _spec: LaunchSpec) -> Result<(), String> {
-        Err("publisher engine requires Windows (iRacing shared memory)".to_string())
-    }
-
-    fn stop(&self) {}
-
-    fn snapshot(&self) -> EngineSnapshot {
-        EngineSnapshot::default()
     }
 }
