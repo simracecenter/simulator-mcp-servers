@@ -216,9 +216,9 @@ impl PublisherEngine for InProcessEngine {
                 .inner
                 .lock()
                 .ok()
-                .and_then(|mut inner| {
+                .map(|mut inner| {
                     Self::reap_finished(&mut inner);
-                    Some(inner.handle.is_none())
+                    inner.handle.is_none()
                 })
                 .unwrap_or(true);
             if finished || std::time::Instant::now() >= deadline {

@@ -456,7 +456,8 @@ pub fn run_pipeline(
                         last_session_num = Some(frame.session_num);
                     } else {
                         session_info_read_failures = session_info_read_failures.saturating_add(1);
-                        if session_info_read_failures == 1 || session_info_read_failures % 300 == 0
+                        if session_info_read_failures == 1
+                            || session_info_read_failures.is_multiple_of(300)
                         {
                             log_warn!(
                                 "[publisher] SessionInfo read failed (update={}, session_num={}, attempts={})",
@@ -664,7 +665,9 @@ pub fn run_pipeline(
                 // events against a ghost session keyed on subSessionId=0.
                 if sub_session_id == 0 {
                     sub_session_blocked_frames = sub_session_blocked_frames.saturating_add(1);
-                    if sub_session_blocked_frames == 1 || sub_session_blocked_frames % 300 == 0 {
+                    if sub_session_blocked_frames == 1
+                        || sub_session_blocked_frames.is_multiple_of(300)
+                    {
                         log_warn!(
                             "[publisher] publishing paused: unresolved subSessionId (SessionInfoUpdate={})",
                             frame.session_info_update,
@@ -855,6 +858,24 @@ fn control_race_event(
             button: request.button,
             requested_at_ms: request.requested_at_ms,
         },
+        ControlAction::ApproveYes | ControlAction::ApproveNo => RaceEvent::DriverApprovalAnswered {
+            lap: frame.lap,
+            session_time: frame.session_time,
+            player_car_idx: frame.player_car_idx,
+            request_id: request.request_id.clone(),
+            press_seq: request.press_seq,
+            driver_id: driver_id.to_owned(),
+            rig_id: rig_id.to_owned(),
+            source: request.source.clone(),
+            button: request.button,
+            requested_at_ms: request.requested_at_ms,
+            answer: match request.action {
+                ControlAction::ApproveYes => "yes",
+                ControlAction::ApproveNo => "no",
+                _ => unreachable!("approval arm only matches approval actions"),
+            }
+            .to_owned(),
+        },
     }
 }
 
@@ -1006,6 +1027,93 @@ fn log_event(
 mod tests {
     use super::roster_resync_due;
     use std::time::{Duration, Instant};
+
+    #[cfg(target_os = "windows")]
+    fn minimal_frame() -> crate::telemetry_frame::TelemetryFrame {
+        crate::telemetry_frame::TelemetryFrame {
+            lap: 4,
+            session_time: 1234.5,
+            lap_dist_pct: 0.5,
+            player_car_idx: 1,
+            player_car_position: 5,
+            on_pit_road: false,
+            session_flags: 0,
+            car_idx_lap_dist_pct: vec![0.5, 0.51],
+            car_idx_position: vec![5, 4],
+            car_idx_on_pit_road: vec![false, false],
+            car_idx_track_surface: vec![0, 0],
+            lap_last_lap_time: 540.0,
+            session_info_update: 1,
+            session_tick: 9876,
+            session_state: 4,
+            session_num: 0,
+            session_time_remain: None,
+            session_laps_remain: None,
+            player_incident_count: 0,
+            car_idx_lap_completed: vec![3, 3],
+            lf_temp_m: 0.0,
+            rf_temp_m: 0.0,
+            lr_temp_m: 0.0,
+            rr_temp_m: 0.0,
+            fuel_level: 0.0,
+            throttle: 0.0,
+            brake: 0.0,
+            speed: 0.0,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn approval_actions_publish_their_answers_with_request_identity() {
+        use crate::controls::{ControlAction, ControlRequest};
+        use crate::race_event::RaceEvent;
+
+        for (action, answer) in [
+            (ControlAction::ApproveYes, "yes"),
+            (ControlAction::ApproveNo, "no"),
+        ] {
+            let request = ControlRequest {
+                action,
+                request_id: "req-approval".to_owned(),
+                press_seq: 7,
+                device: "VID_TEST".to_owned(),
+                button: 8,
+                source: "wheel_button".to_owned(),
+                requested_at_ms: 1_700_000_000_000,
+            };
+            let event =
+                super::control_race_event(&request, &minimal_frame(), "user:123456", "rig-001");
+            assert_eq!(event.kind().event_type(), "DRIVER_APPROVAL_ANSWERED");
+            let RaceEvent::DriverApprovalAnswered {
+                lap,
+                session_time,
+                player_car_idx,
+                request_id,
+                press_seq,
+                driver_id,
+                rig_id,
+                source,
+                button,
+                requested_at_ms,
+                answer: actual_answer,
+            } = event
+            else {
+                panic!("approval action should publish DRIVER_APPROVAL_ANSWERED");
+            };
+
+            assert_eq!(lap, 4);
+            assert_eq!(session_time, 1234.5);
+            assert_eq!(player_car_idx, 1);
+            assert_eq!(request_id, "req-approval");
+            assert_eq!(press_seq, 7);
+            assert_eq!(driver_id, "user:123456");
+            assert_eq!(rig_id, "rig-001");
+            assert_eq!(source, "wheel_button");
+            assert_eq!(button, 8);
+            assert_eq!(requested_at_ms, 1_700_000_000_000);
+            assert_eq!(actual_answer, answer);
+        }
+    }
 
     #[test]
     fn roster_resync_is_due_without_a_previous_attempt() {

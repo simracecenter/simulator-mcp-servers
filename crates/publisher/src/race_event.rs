@@ -645,6 +645,25 @@ pub enum RaceEvent {
         /// Airtime the requesting driver asked for, in milliseconds.
         dwell_ms: u32,
     },
+    /// Driver answered the broadcast agent's pending yes/no question.
+    DriverApprovalAnswered {
+        lap: u8,
+        session_time: f32,
+        player_car_idx: u8,
+        /// Idempotency key — stable across transport retries.
+        request_id: String,
+        /// Monotonic per-publisher counter, orders presses inside one tick.
+        press_seq: u64,
+        /// Stable driver identity: `user:<iRacing userId>` or `name:<normalized>`.
+        driver_id: String,
+        rig_id: String,
+        /// `wheel_button` or `simulated`.
+        source: String,
+        button: u16,
+        /// Wall-clock milliseconds since the Unix epoch.
+        requested_at_ms: i64,
+        answer: String,
+    },
     /// Periodic state of the driver at the wheel of this rig, emitted on a
     /// wall-clock cadence regardless of whether anything notable happened.
     ///
@@ -803,6 +822,7 @@ pub enum RaceEventKind {
     PublisherGoodbye,
     PublisherHeartbeat,
     FocusMeRequested,
+    DriverApprovalAnswered,
     DriverMaterial,
     SessionReset,
     BroadcastControlRequested,
@@ -860,7 +880,8 @@ impl RaceEventKind {
             | Self::IncidentClusterResolved
             | Self::TrafficCompressionZone
             | Self::DriverMaterial
-            | Self::FocusMeRequested => EventScope::CarScoped,
+            | Self::FocusMeRequested
+            | Self::DriverApprovalAnswered => EventScope::CarScoped,
         }
     }
 }
@@ -903,6 +924,7 @@ impl RaceEvent {
             Self::PublisherGoodbye { .. } => RaceEventKind::PublisherGoodbye,
             Self::PublisherHeartbeat { .. } => RaceEventKind::PublisherHeartbeat,
             Self::FocusMeRequested { .. } => RaceEventKind::FocusMeRequested,
+            Self::DriverApprovalAnswered { .. } => RaceEventKind::DriverApprovalAnswered,
             Self::DriverMaterial { .. } => RaceEventKind::DriverMaterial,
             Self::SessionReset { .. } => RaceEventKind::SessionReset,
             Self::SessionState { .. } => RaceEventKind::SessionState,

@@ -301,7 +301,8 @@ fn primary_car_idx(event: &RaceEvent, player_car_idx: u8) -> u8 {
             opponent_car_idx, ..
         } => *opponent_car_idx,
         RaceEvent::IncidentAlert { car_idx, .. } => *car_idx,
-        RaceEvent::FocusMeRequested { player_car_idx, .. } => *player_car_idx,
+        RaceEvent::FocusMeRequested { player_car_idx, .. }
+        | RaceEvent::DriverApprovalAnswered { player_car_idx, .. } => *player_car_idx,
         _ => player_car_idx,
     }
 }
@@ -531,6 +532,7 @@ fn event_roles(event: &RaceEvent, frame: &TelemetryFrame) -> EventRoles {
         | RaceEvent::IracingDisconnected { .. }
         | RaceEvent::BroadcastControlRequested { .. } => EventRoles::solo(me, SubjectRole::Rig),
         RaceEvent::FocusMeRequested { player_car_idx, .. }
+        | RaceEvent::DriverApprovalAnswered { player_car_idx, .. }
         | RaceEvent::DriverMaterial { player_car_idx, .. } => {
             EventRoles::solo(*player_car_idx, SubjectRole::Driver)
         }
