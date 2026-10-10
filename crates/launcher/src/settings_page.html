@@ -189,6 +189,7 @@
   <div class="pairing" id="wheel-controls" data-testid="wheel-controls">
     <h2>WHEEL BUTTONS</h2>
     <div class="pairing-value" id="wheel-status" data-testid="wheel-status" role="status">Starting wheel input…</div>
+    <div class="pairing-value" id="wheel-error" data-testid="wheel-error" role="status" hidden></div>
     <div class="wheel-row" data-testid="wheel-row-focus_me">
       <span>Focus on me</span>
       <span class="wheel-binding" id="wheel-binding-focus_me" data-testid="wheel-binding-focus_me">Not bound</span>
@@ -238,6 +239,7 @@ const fingerprintEl = document.getElementById('cert-fingerprint');
 const pairingStatusEl = document.getElementById('pairing-status');
 const unpairEl = document.getElementById('unpair');
 const wheelStatusEl = document.getElementById('wheel-status');
+const wheelErrorEl = document.getElementById('wheel-error');
 const wheelLastPressEl = document.getElementById('wheel-last-press');
 let wheelLearning = null;
 const wheelActions = ['focus_me', 'broadcast_toggle', 'approve_yes', 'approve_no'];
@@ -282,7 +284,9 @@ async function loadControls() {
     const data = await res.json();
     wheelLearning = data.learning;
     if (data.listening) {
-      wheelStatusEl.textContent = `Listening to ${data.devicesSeen} devices`;
+      wheelStatusEl.textContent = `Listening for wheel buttons${
+        data.devicesSeen > 0 ? ` (${data.devicesSeen} devices seen)` : ''
+      }`;
     } else if (data.lastError) {
       wheelStatusEl.textContent = `Wheel input unavailable: ${data.lastError}`;
     } else if (!data.available) {
@@ -290,6 +294,8 @@ async function loadControls() {
     } else {
       wheelStatusEl.textContent = 'Starting wheel input…';
     }
+    wheelErrorEl.hidden = !data.lastError;
+    wheelErrorEl.textContent = data.lastError || '';
     for (const action of wheelActions) {
       const binding = data.bindings.find((item) => item.action === action);
       const bindingEl = document.getElementById(`wheel-binding-${action}`);

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use publisher::controls::{self, CapturedBinding, ControlAction, ControlsConfig, ControlsState};
 use publisher_mcp::ControlRelay;
@@ -15,7 +17,7 @@ use publisher::controls::ControlRequest;
 use std::thread::JoinHandle;
 
 #[cfg(windows)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,7 +60,8 @@ pub struct RequestStatus {
 pub struct WheelControls {
     state: Arc<Mutex<ControlsState>>,
     relay: Arc<ControlRelay>,
-    running: Arc<AtomicBool>,
+    #[cfg(windows)]
+    running: Mutex<Option<Arc<AtomicBool>>>,
     path: PathBuf,
     #[cfg(windows)]
     listener_handle: Mutex<Option<JoinHandle<()>>>,
@@ -76,8 +79,9 @@ impl WheelControls {
         Self {
             state: Arc::new(Mutex::new(state)),
             relay,
-            running: Arc::new(AtomicBool::new(false)),
             path,
+            #[cfg(windows)]
+            running: Mutex::new(None),
             #[cfg(windows)]
             listener_handle: Mutex::new(None),
         }
@@ -90,31 +94,45 @@ impl WheelControls {
     pub fn start(&self) {
         #[cfg(windows)]
         {
-            let Ok(mut handle) = self.listener_handle.lock() else {
-                return;
-            };
-            if self.running.load(Ordering::SeqCst) {
+            let mut handle = self
+                .listener_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut running_slot = self
+                .running
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if running_slot
+                .as_ref()
+                .is_some_and(|running| running.load(Ordering::SeqCst))
+            {
                 return;
             }
+            let has_previous_generation = running_slot.is_some();
             if let Some(previous) = handle.take() {
                 let _ = previous.join();
             }
+            if (has_previous_generation || self.is_listening()) && !self.wait_for_listener_stopped()
+            {
+                self.set_error("wheel input listener did not stop within 1 second".to_string());
+                return;
+            }
 
-            self.running.store(true, Ordering::SeqCst);
-            let receiver = publisher::controls_input::spawn(
-                Arc::clone(&self.state),
-                Arc::clone(&self.running),
-            );
-            let running = Arc::clone(&self.running);
+            let running = Arc::new(AtomicBool::new(true));
+            *running_slot = Some(Arc::clone(&running));
+            drop(running_slot);
+            let receiver =
+                publisher::controls_input::spawn(Arc::clone(&self.state), Arc::clone(&running));
             let relay = Arc::clone(&self.relay);
             let state = Arc::clone(&self.state);
+            let forwarder_running = Arc::clone(&running);
             match std::thread::Builder::new()
                 .name("wheel-controls-forward".to_string())
-                .spawn(move || forward_requests(receiver, running, relay, state))
+                .spawn(move || forward_requests(receiver, forwarder_running, relay, state))
             {
                 Ok(forwarder) => *handle = Some(forwarder),
                 Err(error) => {
-                    self.running.store(false, Ordering::SeqCst);
+                    running.store(false, Ordering::SeqCst);
                     self.set_error(format!("could not start wheel control forwarder: {error}"));
                 }
             }
@@ -122,14 +140,32 @@ impl WheelControls {
     }
 
     pub fn stop(&self) {
-        self.running.store(false, Ordering::SeqCst);
+        #[cfg(windows)]
+        let mut handle = self
+            .listener_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        #[cfg(windows)]
+        {
+            let running = self
+                .running
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(running) = running {
+                running.store(false, Ordering::SeqCst);
+            }
+        }
         if let Ok(mut state) = self.state.lock() {
             state.learning = None;
         }
         #[cfg(windows)]
-        if let Ok(mut handle) = self.listener_handle.lock() {
+        {
             if let Some(forwarder) = handle.take() {
                 let _ = forwarder.join();
+            }
+            if !self.wait_for_listener_stopped() {
+                self.set_error("wheel input listener did not stop within 1 second".to_string());
             }
         }
     }
@@ -189,6 +225,28 @@ impl WheelControls {
     fn set_error(&self, error: String) {
         if let Ok(mut state) = self.state.lock() {
             state.last_error = Some(error);
+        }
+    }
+
+    #[cfg(windows)]
+    fn is_listening(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.listening)
+            .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    fn wait_for_listener_stopped(&self) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if !self.is_listening() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
