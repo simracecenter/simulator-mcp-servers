@@ -88,6 +88,9 @@ pub fn save(config: &LauncherConfig) -> Result<(), mcp_core::config::ConfigError
     mcp_core::config::save(&config_path(), config)
 }
 
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct FileConfigStore;
 
 impl publisher_mcp::PublisherConfigStore for FileConfigStore {
@@ -106,13 +109,9 @@ impl publisher_mcp::PublisherConfigStore for FileConfigStore {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use publisher_mcp::PublisherConfigStore;
 
     use super::*;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_config_uses_iracing() {

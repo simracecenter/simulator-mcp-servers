@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::config::{PublisherConfig, PublisherConfigStore};
-use crate::engine::{EngineState, LaunchSpec, PublisherEngine};
+use crate::engine::{ControlRelay, EngineState, LaunchSpec, PublisherEngine};
 use crate::secret::{default_token_store, SecretString, TokenStore};
 
 pub const MUTATING_TOOLS: &[&str] = &["publisher_configure", "publisher_start", "publisher_stop"];
@@ -53,10 +53,21 @@ impl PublisherMcpHandler {
     }
 
     pub fn with_config_store(config_store: Arc<dyn PublisherConfigStore>) -> Self {
+        Self::with_config_store_and_relay(config_store, Arc::new(ControlRelay::new()))
+    }
+
+    pub fn with_config_store_and_relay(
+        config_store: Arc<dyn PublisherConfigStore>,
+        relay: Arc<ControlRelay>,
+    ) -> Self {
         #[cfg(windows)]
-        let engine: Arc<dyn PublisherEngine> = Arc::new(crate::engine::InProcessEngine::default());
+        let engine: Arc<dyn PublisherEngine> =
+            Arc::new(crate::engine::InProcessEngine::with_relay(relay));
         #[cfg(not(windows))]
-        let engine: Arc<dyn PublisherEngine> = Arc::new(crate::engine::UnsupportedEngine);
+        let engine: Arc<dyn PublisherEngine> = {
+            let _ = relay;
+            Arc::new(crate::engine::UnsupportedEngine)
+        };
         Self::new(engine, config_store)
     }
 

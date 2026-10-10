@@ -8,6 +8,10 @@
 //! - `GET /healthz`       — liveness check.
 //! - `GET /api/status`    — active sim, connection status, and live tool names.
 //! - `POST /api/sim`      — persist selection and hot-swap the in-process handler.
+//! - `GET /api/controls`  — wheel input availability, bindings, and status.
+//! - `POST /api/controls/learn` — learn a wheel-button binding.
+//! - `POST /api/controls/cancel` — cancel wheel-button learning.
+//! - `POST /api/controls/clear` — clear a wheel-button binding.
 //!
 //! The server binds loopback by default and has no authentication because it
 //! is intended for local Driver settings control.
@@ -27,10 +31,12 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use mcp_core::{JsonRpcRequest, McpHandler};
+use publisher::controls::ControlAction;
 
 use crate::config::{self, Sim};
 use crate::pairing::PairingState;
 use crate::runner::{build_handler, SwappableHandler, TransportSupervisor};
+use crate::wheel_controls::WheelControls;
 
 /// Shared state for the settings server.
 pub struct SettingsState {
@@ -38,6 +44,7 @@ pub struct SettingsState {
     pub handler: Arc<SwappableHandler>,
     pub pairing: Arc<PairingState>,
     pub supervisor: Arc<TransportSupervisor>,
+    pub controls: Arc<WheelControls>,
 }
 
 impl SettingsState {
@@ -46,12 +53,14 @@ impl SettingsState {
         sim: Sim,
         pairing: Arc<PairingState>,
         supervisor: Arc<TransportSupervisor>,
+        controls: Arc<WheelControls>,
     ) -> Arc<Self> {
         Arc::new(Self {
             current_sim: RwLock::new(sim),
             handler,
             pairing,
             supervisor,
+            controls,
         })
     }
 }
@@ -59,6 +68,11 @@ impl SettingsState {
 #[derive(Deserialize)]
 struct SimRequest {
     sim: Sim,
+}
+
+#[derive(Deserialize)]
+struct ControlActionRequest {
+    action: String,
 }
 
 #[derive(Serialize)]
@@ -86,6 +100,10 @@ pub async fn run(bind: &str, state: Arc<SettingsState>) -> std::io::Result<()> {
         .route("/healthz", get(healthz))
         .route("/api/status", get(api_status))
         .route("/api/sim", post(api_sim))
+        .route("/api/controls", get(api_controls))
+        .route("/api/controls/learn", post(api_controls_learn))
+        .route("/api/controls/cancel", post(api_controls_cancel))
+        .route("/api/controls/clear", post(api_controls_clear))
         .route("/api/unpair", post(api_unpair))
         .with_state(state);
 
@@ -115,6 +133,59 @@ async fn api_status(State(state): State<Arc<SettingsState>>) -> Json<Status> {
     Json(build_status(&state.handler, sim, &state.pairing).await)
 }
 
+async fn api_controls(
+    State(state): State<Arc<SettingsState>>,
+) -> Json<crate::wheel_controls::ControlsStatus> {
+    Json(state.controls.status())
+}
+
+async fn api_controls_learn(
+    State(state): State<Arc<SettingsState>>,
+    Json(body): Json<ControlActionRequest>,
+) -> Result<Json<crate::wheel_controls::ControlsStatus>, (StatusCode, String)> {
+    let action = parse_control_action(&body.action)?;
+    require_publisher(&state).await?;
+    state.controls.learn(action);
+    Ok(Json(state.controls.status()))
+}
+
+async fn api_controls_cancel(
+    State(state): State<Arc<SettingsState>>,
+) -> Json<crate::wheel_controls::ControlsStatus> {
+    state.controls.cancel_learn();
+    Json(state.controls.status())
+}
+
+async fn api_controls_clear(
+    State(state): State<Arc<SettingsState>>,
+    Json(body): Json<ControlActionRequest>,
+) -> Result<Json<crate::wheel_controls::ControlsStatus>, (StatusCode, String)> {
+    let action = parse_control_action(&body.action)?;
+    require_publisher(&state).await?;
+    state.controls.clear(action);
+    Ok(Json(state.controls.status()))
+}
+
+fn parse_control_action(action: &str) -> Result<ControlAction, (StatusCode, String)> {
+    ControlAction::parse(action).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unknown control action: {action}"),
+        )
+    })
+}
+
+async fn require_publisher(state: &SettingsState) -> Result<(), (StatusCode, String)> {
+    if *state.current_sim.read().await == Sim::Publisher {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::CONFLICT,
+            "Select Publisher to bind wheel buttons".to_string(),
+        ))
+    }
+}
+
 async fn api_sim(
     State(state): State<Arc<SettingsState>>,
     Json(body): Json<SimRequest>,
@@ -123,13 +194,22 @@ async fn api_sim(
     {
         let mut sim_lock = state.current_sim.write().await;
         if *sim_lock != new_sim {
+            let previous_sim = *sim_lock;
             let mut config = config::load()
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
             config.active_sim = new_sim;
             config::save(&config)
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-            state.handler.set(build_handler(new_sim));
+            if previous_sim == Sim::Publisher && new_sim != Sim::Publisher {
+                state.controls.stop();
+            }
+            state
+                .handler
+                .set(build_handler(new_sim, state.controls.relay()));
             state.supervisor.start(new_sim);
+            if new_sim == Sim::Publisher {
+                state.controls.start();
+            }
             *sim_lock = new_sim;
         }
     }
@@ -232,4 +312,169 @@ async fn get_tool_names(handler: &SwappableHandler) -> Vec<String> {
     }
 
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{LauncherConfig, ENV_LOCK};
+    use crate::pairing::{InMemoryPairingStore, PairingState};
+    use crate::runner::{build_handler, SwappableHandler, TransportSupervisor};
+    use crate::wheel_controls::WheelControls;
+    use publisher::controls::{load_controls, save_controls, ButtonBinding, ControlsConfig};
+
+    fn test_state(sim: Sim) -> Arc<SettingsState> {
+        let relay = Arc::new(publisher_mcp::ControlRelay::new());
+        let controls = Arc::new(WheelControls::new(Arc::clone(&relay)));
+        let handler = Arc::new(SwappableHandler::new(build_handler(sim, &relay)));
+        let pairing = Arc::new(
+            PairingState::new(
+                Arc::new(mcp_core::transport::http::access::CredentialRegistry::new()),
+                Arc::new(InMemoryPairingStore::new(LauncherConfig::default())),
+                "rig1".to_string(),
+                "AA:BB".to_string(),
+            )
+            .unwrap(),
+        );
+        let supervisor = Arc::new(TransportSupervisor::new(
+            crate::TransportKind::Stdio,
+            "127.0.0.1:0".to_string(),
+            handler.clone(),
+            pairing.clone(),
+        ));
+        SettingsState::new(handler, sim, pairing, supervisor, controls)
+    }
+
+    fn isolated_appdata(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "simracecenter-settings-controls-{label}-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&path).ok();
+        std::env::set_var("APPDATA", &path);
+        path
+    }
+
+    fn clean_appdata(path: &std::path::Path) {
+        std::fs::remove_dir_all(path).ok();
+        std::env::remove_var("APPDATA");
+    }
+
+    #[tokio::test]
+    async fn learn_sets_learning_and_cancel_clears_it() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = isolated_appdata("learn-cancel");
+        let state = test_state(Sim::Publisher);
+        drop(_guard);
+
+        let learned = api_controls_learn(
+            State(Arc::clone(&state)),
+            Json(ControlActionRequest {
+                action: "approve_yes".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(learned.0.learning.as_deref(), Some("approve_yes"));
+
+        let cancelled = api_controls_cancel(State(state)).await;
+        assert_eq!(cancelled.0.learning, None);
+        let _guard = ENV_LOCK.lock().unwrap();
+        clean_appdata(&appdata);
+    }
+
+    #[tokio::test]
+    async fn clear_removes_binding_and_persists_the_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = isolated_appdata("clear");
+        let controls_path = appdata
+            .join("SimRaceCenter")
+            .join(publisher::controls::CONTROLS_FILE_NAME);
+        let mut config = ControlsConfig::default();
+        config.set_binding(ButtonBinding {
+            action: ControlAction::ApproveYes,
+            device: "VID_1234&PID_5678".to_string(),
+            button: 7,
+        });
+        save_controls(&controls_path, &config).unwrap();
+        let state = test_state(Sim::Publisher);
+        drop(_guard);
+
+        let status = api_controls_clear(
+            State(state),
+            Json(ControlActionRequest {
+                action: "approve_yes".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let binding = status
+            .0
+            .bindings
+            .iter()
+            .find(|binding| binding.action == "approve_yes")
+            .unwrap();
+        assert_eq!(binding.device, None);
+        assert_eq!(binding.button, None);
+        assert!(load_controls(&controls_path)
+            .unwrap()
+            .binding_for(ControlAction::ApproveYes)
+            .is_none());
+        let _guard = ENV_LOCK.lock().unwrap();
+        clean_appdata(&appdata);
+    }
+
+    #[tokio::test]
+    async fn unknown_action_returns_bad_request() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = isolated_appdata("unknown");
+        let state = test_state(Sim::Publisher);
+        drop(_guard);
+
+        let error = api_controls_learn(
+            State(state),
+            Json(ControlActionRequest {
+                action: "not_a_control".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        let _guard = ENV_LOCK.lock().unwrap();
+        clean_appdata(&appdata);
+    }
+
+    #[tokio::test]
+    async fn non_publisher_role_returns_conflict_for_learning_and_clearing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let appdata = isolated_appdata("role");
+        let state = test_state(Sim::Iracing);
+        drop(_guard);
+
+        let learn_error = api_controls_learn(
+            State(Arc::clone(&state)),
+            Json(ControlActionRequest {
+                action: "approve_yes".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        let clear_error = api_controls_clear(
+            State(state),
+            Json(ControlActionRequest {
+                action: "approve_yes".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(learn_error.0, StatusCode::CONFLICT);
+        assert_eq!(learn_error.1, "Select Publisher to bind wheel buttons");
+        assert_eq!(clear_error.0, StatusCode::CONFLICT);
+        assert_eq!(clear_error.1, "Select Publisher to bind wheel buttons");
+        let _guard = ENV_LOCK.lock().unwrap();
+        clean_appdata(&appdata);
+    }
 }

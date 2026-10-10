@@ -19,6 +19,7 @@ use tracing::error;
 use crate::config::Sim;
 use crate::TransportKind;
 use crate::{pair_server::build_publisher_router, pairing::PairingState};
+use publisher_mcp::ControlRelay;
 use tokio::task::JoinHandle;
 
 /// A [`McpHandler`] that delegates to a swappable inner handler.
@@ -52,7 +53,7 @@ impl McpHandler for SwappableHandler {
 }
 
 /// Build the concrete [`McpHandler`] for `sim`.
-pub fn build_handler(sim: Sim) -> Arc<dyn McpHandler> {
+pub fn build_handler(sim: Sim, relay: &Arc<ControlRelay>) -> Arc<dyn McpHandler> {
     match sim {
         Sim::Iracing => {
             let adapter = Arc::new(iracing_mcp::adapter::SdkAdapter);
@@ -65,9 +66,12 @@ pub fn build_handler(sim: Sim) -> Arc<dyn McpHandler> {
             let handler: Arc<dyn McpHandler> = Arc::new(lmu_mcp::LmuMcpHandler::new(adapter));
             handler
         }
-        Sim::Publisher => Arc::new(publisher_mcp::PublisherMcpHandler::with_config_store(
-            Arc::new(crate::config::FileConfigStore),
-        )),
+        Sim::Publisher => Arc::new(
+            publisher_mcp::PublisherMcpHandler::with_config_store_and_relay(
+                Arc::new(crate::config::FileConfigStore),
+                Arc::clone(relay),
+            ),
+        ),
     }
 }
 
@@ -148,7 +152,7 @@ mod tests {
 
     #[tokio::test]
     async fn publisher_handler_exposes_only_publisher_tools() {
-        let handler = build_handler(Sim::Publisher);
+        let handler = build_handler(Sim::Publisher, &Arc::new(ControlRelay::new()));
         let response = handler
             .handle(mcp_core::JsonRpcRequest {
                 jsonrpc: "2.0".to_string(),
@@ -200,7 +204,10 @@ mod tests {
         let supervisor = TransportSupervisor::new(
             TransportKind::Http,
             bind.clone(),
-            Arc::new(SwappableHandler::new(build_handler(Sim::Publisher))),
+            Arc::new(SwappableHandler::new(build_handler(
+                Sim::Publisher,
+                &Arc::new(ControlRelay::new()),
+            ))),
             pairing,
         );
         supervisor.start(Sim::Publisher);
@@ -229,9 +236,9 @@ mod tests {
 
     #[tokio::test]
     async fn swapping_away_from_publisher_releases_the_previous_handler() {
-        let publisher = build_handler(Sim::Publisher);
+        let publisher = build_handler(Sim::Publisher, &Arc::new(ControlRelay::new()));
         let swapped = SwappableHandler::new(Arc::clone(&publisher));
-        swapped.set(build_handler(Sim::Iracing));
+        swapped.set(build_handler(Sim::Iracing, &Arc::new(ControlRelay::new())));
         assert_eq!(Arc::strong_count(&publisher), 1);
 
         let response = swapped
