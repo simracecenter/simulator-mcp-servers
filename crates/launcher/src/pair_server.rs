@@ -134,6 +134,7 @@ mod tests {
             build_publisher_router(
                 Arc::new(crate::runner::SwappableHandler::new(build_handler(
                     crate::config::Sim::Publisher,
+                    &Arc::new(publisher_mcp::ControlRelay::new()),
                 ))),
                 pairing.clone(),
             ),
@@ -383,6 +384,7 @@ mod tests {
         let app = build_publisher_router(
             Arc::new(crate::runner::SwappableHandler::new(build_handler(
                 crate::config::Sim::Publisher,
+                &Arc::new(publisher_mcp::ControlRelay::new()),
             ))),
             second_pairing.clone(),
         );

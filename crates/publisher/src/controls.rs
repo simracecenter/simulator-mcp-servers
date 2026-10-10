@@ -355,13 +355,13 @@ pub struct CapturedBinding {
     pub button: u16,
 }
 
-/// State shared between the publisher UI (writer of `learning`), the input
+/// State shared between the launcher settings page (writer of `learning`), the input
 /// backend (writer of everything else) and the pipeline thread.
 #[derive(Debug)]
 pub struct ControlsState {
     pub config: ControlsConfig,
     pub config_path: PathBuf,
-    /// Set by the UI when the driver clicks a "Bind" button; cleared by the
+    /// Set by the settings page when the driver clicks a "Bind" button; cleared by the
     /// input backend once the next wheel button is captured.
     pub learning: Option<ControlAction>,
     /// Most recent capture, shown as confirmation in the UI.

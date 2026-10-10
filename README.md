@@ -128,8 +128,10 @@ are also accepted as `approve-yes` / `yes` and `approve-no` / `no`, and use a sh
 cooldown of 2,000 ms. A press publishes either `FOCUS_ME_REQUESTED`,
 `BROADCAST_CONTROL_REQUESTED`, or the car-scoped `DRIVER_APPROVAL_ANSWERED` event. The latter
 carries `answer` as `yes` or `no` together with the requesting driver's car and request identity.
-The launcher's settings page selects the active publisher role; wheel bindings are learned and
-stored by the publisher controls subsystem rather than by the simulator-source selector.
+The launcher starts Raw Input for the full Publisher role. Bindings are learned in the settings
+page's WHEEL BUTTONS section and stored in `%APPDATA%\SimRaceCenter\controls.toml`. Presses reach
+the publisher engine through `ControlRelay` and are dropped while the engine is stopped. To bind a
+button, select Publisher, click BIND next to an action, then press the wheel button.
 
 ## Documentation
 
