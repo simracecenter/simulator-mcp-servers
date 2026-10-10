@@ -119,6 +119,18 @@ Linux/dev-container work verifies logic against stub adapters and cross-compilat
 `e2e/` Playwright suite drives the settings UI headless on Linux. End-to-end verification with a
 live simulator still happens on a Windows Rig.
 
+### Publisher wheel controls
+
+The publisher accepts learned wheel-button bindings for four operator actions. Their stable
+configuration names are `focus_me`, `broadcast_toggle`, `approve_yes`, and `approve_no`; the
+publisher control binding surface exposes all four through `ControlAction::ALL`. Approval actions
+are also accepted as `approve-yes` / `yes` and `approve-no` / `no`, and use a shared default
+cooldown of 2,000 ms. A press publishes either `FOCUS_ME_REQUESTED`,
+`BROADCAST_CONTROL_REQUESTED`, or the car-scoped `DRIVER_APPROVAL_ANSWERED` event. The latter
+carries `answer` as `yes` or `no` together with the requesting driver's car and request identity.
+The launcher's settings page selects the active publisher role; wheel bindings are learned and
+stored by the publisher controls subsystem rather than by the simulator-source selector.
+
 ## Documentation
 
 | Document | Purpose |

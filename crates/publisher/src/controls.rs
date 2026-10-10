@@ -7,6 +7,7 @@
 //!
 //! * `focus_me` — ask the auto-broadcast agent to cut to this driver's onboard.
 //! * `broadcast_toggle` — pause/resume the auto-broadcast agent.
+//! * `approve_yes` / `approve_no` — answer the agent's pending driver question.
 //!
 //! This module holds the platform-independent half of the feature: binding
 //! storage (`controls.toml`), press → request state machine (edge detection,
@@ -42,16 +43,27 @@ pub enum ControlAction {
     FocusMe,
     /// Pause/resume the auto-broadcast agent.
     BroadcastToggle,
+    /// Approve the pending audience request.
+    ApproveYes,
+    /// Decline the pending audience request.
+    ApproveNo,
 }
 
 impl ControlAction {
-    pub const ALL: [ControlAction; 2] = [ControlAction::FocusMe, ControlAction::BroadcastToggle];
+    pub const ALL: [ControlAction; 4] = [
+        ControlAction::FocusMe,
+        ControlAction::BroadcastToggle,
+        ControlAction::ApproveYes,
+        ControlAction::ApproveNo,
+    ];
 
     /// Stable identifier used in config files and CLI flags.
     pub fn as_str(self) -> &'static str {
         match self {
             ControlAction::FocusMe => "focus_me",
             ControlAction::BroadcastToggle => "broadcast_toggle",
+            ControlAction::ApproveYes => "approve_yes",
+            ControlAction::ApproveNo => "approve_no",
         }
     }
 
@@ -60,6 +72,8 @@ impl ControlAction {
         match self {
             ControlAction::FocusMe => "Focus on me",
             ControlAction::BroadcastToggle => "Pause / resume auto broadcast",
+            ControlAction::ApproveYes => "Approve (yes)",
+            ControlAction::ApproveNo => "Decline (no)",
         }
     }
 
@@ -69,6 +83,8 @@ impl ControlAction {
             "broadcast_toggle" | "broadcast-toggle" | "toggle" => {
                 Some(ControlAction::BroadcastToggle)
             }
+            "approve_yes" | "approve-yes" | "yes" => Some(ControlAction::ApproveYes),
+            "approve_no" | "approve-no" | "no" => Some(ControlAction::ApproveNo),
             _ => None,
         }
     }
@@ -118,6 +134,8 @@ pub struct ControlsConfig {
     pub focus_cooldown_ms: u64,
     /// Minimum interval between two accepted pause/resume requests.
     pub toggle_cooldown_ms: u64,
+    /// Minimum interval between two accepted approval answers.
+    pub approve_cooldown_ms: u64,
     pub bindings: Vec<ButtonBinding>,
 }
 
@@ -128,6 +146,7 @@ impl Default for ControlsConfig {
             debounce_ms: 250,
             focus_cooldown_ms: 30_000,
             toggle_cooldown_ms: 3_000,
+            approve_cooldown_ms: 2_000,
             bindings: Vec::new(),
         }
     }
@@ -160,6 +179,7 @@ impl ControlsConfig {
         match action {
             ControlAction::FocusMe => self.focus_cooldown_ms,
             ControlAction::BroadcastToggle => self.toggle_cooldown_ms,
+            ControlAction::ApproveYes | ControlAction::ApproveNo => self.approve_cooldown_ms,
         }
     }
 }
@@ -584,6 +604,67 @@ mod tests {
             ControlAction::parse("Broadcast-Toggle"),
             Some(ControlAction::BroadcastToggle)
         );
+        assert_eq!(
+            ControlAction::parse("approve_yes"),
+            Some(ControlAction::ApproveYes)
+        );
+        assert_eq!(
+            ControlAction::parse("approve-yes"),
+            Some(ControlAction::ApproveYes)
+        );
+        assert_eq!(
+            ControlAction::parse("APPROVE-NO"),
+            Some(ControlAction::ApproveNo)
+        );
+        assert_eq!(
+            ControlAction::parse("approve-no"),
+            Some(ControlAction::ApproveNo)
+        );
+        assert_eq!(
+            ControlAction::parse(" yes "),
+            Some(ControlAction::ApproveYes)
+        );
+        assert_eq!(ControlAction::parse("no"), Some(ControlAction::ApproveNo));
         assert_eq!(ControlAction::parse("nope"), None);
+    }
+
+    #[test]
+    fn all_actions_round_trip_and_have_distinct_bindings() {
+        assert_eq!(ControlAction::ALL.len(), 4);
+        for action in ControlAction::ALL {
+            assert_eq!(ControlAction::parse(action.as_str()), Some(action));
+        }
+
+        let mut config = ControlsConfig::default();
+        for (action, button) in ControlAction::ALL.into_iter().zip(1..=4) {
+            config.set_binding(ButtonBinding {
+                action,
+                device: "VID_TEST".to_owned(),
+                button,
+            });
+        }
+        for (action, button) in ControlAction::ALL.into_iter().zip(1..=4) {
+            assert_eq!(config.action_for("wheel VID_TEST", button), Some(action));
+        }
+        assert_eq!(config.cooldown_ms(ControlAction::FocusMe), 30_000);
+        assert_eq!(config.cooldown_ms(ControlAction::BroadcastToggle), 3_000);
+        assert_eq!(config.cooldown_ms(ControlAction::ApproveYes), 2_000);
+        assert_eq!(config.cooldown_ms(ControlAction::ApproveNo), 2_000);
+    }
+
+    #[test]
+    fn legacy_config_uses_approval_cooldown_default() {
+        let dir = std::env::temp_dir().join(format!("legacy-controls-{}", Uuid::new_v4()));
+        let path = dir.join(CONTROLS_FILE_NAME);
+        fs::create_dir_all(&dir).expect("create temporary config directory");
+        fs::write(
+            &path,
+            "enabled = true\ndebounce_ms = 250\nfocus_cooldown_ms = 30000\ntoggle_cooldown_ms = 3000\nbindings = []\n",
+        )
+        .expect("write legacy config");
+
+        let config = load_controls(&path).expect("legacy config loads");
+        assert_eq!(config.approve_cooldown_ms, 2_000);
+        fs::remove_dir_all(&dir).ok();
     }
 }

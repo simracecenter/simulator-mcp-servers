@@ -143,6 +143,10 @@
     },
     {
       "scope": "CAR_SCOPED",
+      "type": "DRIVER_APPROVAL_ANSWERED"
+    },
+    {
+      "scope": "CAR_SCOPED",
       "type": "DRIVER_MATERIAL"
     },
     {

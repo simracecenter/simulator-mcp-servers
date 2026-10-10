@@ -1314,6 +1314,47 @@ fn focus_me_requested_contract_carries_requester_identity_and_dwell() {
 }
 
 #[test]
+fn driver_approval_answered_contract_carries_requester_identity_and_answer() {
+    let event = RaceEvent::DriverApprovalAnswered {
+        lap: 4,
+        session_time: 1234.5,
+        player_car_idx: 1,
+        request_id: "req-approval".to_owned(),
+        press_seq: 5,
+        driver_id: "user:123456".to_owned(),
+        rig_id: "rig-001".to_owned(),
+        source: "wheel_button".to_owned(),
+        button: 8,
+        requested_at_ms: 1_700_000_000_002,
+        answer: "yes".to_owned(),
+    };
+
+    let env = build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    );
+    let json = normalized_event_json(&env);
+
+    assert_envelope_contract(&json, "DRIVER_APPROVAL_ANSWERED");
+    assert_eq!(json["scope"], "CAR_SCOPED");
+    assert_eq!(json["car"]["carIdx"], 1);
+    assert_eq!(json["payload"]["request_id"], "req-approval");
+    assert_eq!(json["payload"]["press_seq"], 5);
+    assert_eq!(json["payload"]["driver_id"], "user:123456");
+    assert_eq!(json["payload"]["rig_id"], "rig-001");
+    assert_eq!(json["payload"]["source"], "wheel_button");
+    assert_eq!(json["payload"]["button"], 8);
+    assert_eq!(json["payload"]["requested_at_ms"], 1_700_000_000_002i64);
+    assert_eq!(json["payload"]["answer"], "yes");
+    assert!(json["payload"].get("dwell_ms").is_none());
+}
+
+#[test]
 fn broadcast_control_requested_is_rig_scoped_and_carries_no_car() {
     let event = RaceEvent::BroadcastControlRequested {
         lap: 4,
