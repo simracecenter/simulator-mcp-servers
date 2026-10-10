@@ -100,7 +100,7 @@ Shutdown persists whatever is still queued, then drains the outbox on a
 bounded best-effort pass (single-attempt posts, ~4 s budget); unacknowledged
 files wait for the next launch.
 
-## Wheel controls (2026-10-09 amendment)
+## Wheel controls (2026-10-10 amendment)
 
 The publisher owns learned wheel-button bindings for `focus_me`, `broadcast_toggle`,
 `approve_yes`, and `approve_no`. Approval answers share a 2,000 ms cooldown and are emitted as
