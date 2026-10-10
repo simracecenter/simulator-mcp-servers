@@ -460,12 +460,11 @@ mod tests {
         let second_response = pairing.pair(second_request).unwrap();
         let second = pairing.directors()[1].clone();
 
-        let app = crate::pair_server::build_publisher_router(
-            Arc::new(crate::runner::SwappableHandler::new(
-                crate::runner::build_handler(crate::config::Sim::Publisher),
-            )),
-            pairing.clone(),
-        );
+        let relay = Arc::new(publisher_mcp::ControlRelay::new());
+        let handler = Arc::new(crate::runner::SwappableHandler::new(
+            crate::runner::build_handler(crate::config::Sim::Publisher, &relay),
+        ));
+        let app = crate::pair_server::build_publisher_router(handler, pairing.clone());
         assert_eq!(
             credential_status(&app, &first_response.credential).await,
             StatusCode::OK

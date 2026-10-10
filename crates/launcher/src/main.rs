@@ -7,16 +7,19 @@ mod settings_server;
 mod singleton;
 mod tls;
 mod ui;
+mod wheel_controls;
 
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use config::Sim;
+use publisher_mcp::ControlRelay;
 use runner::{build_handler, SwappableHandler, TransportSupervisor};
 use settings_server::SettingsState;
 use singleton::SingletonGuard;
 use tracing::{error, info, warn};
 use ui::LauncherUi;
+use wheel_controls::WheelControls;
 
 /// Whether `bind` exposes the transport beyond the local machine. A bind is
 /// treated as loopback-only when its host is an explicit loopback address
@@ -132,7 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let handler = Arc::new(SwappableHandler::new(build_handler(active_sim)));
+    let relay = Arc::new(ControlRelay::new());
+    let controls = Arc::new(WheelControls::new(Arc::clone(&relay)));
+    let handler = Arc::new(SwappableHandler::new(build_handler(active_sim, &relay)));
     let identity =
         Arc::new(tls::load_or_generate(&config::config_dir()).map_err(std::io::Error::other)?);
     let pairing = Arc::new(
@@ -150,6 +155,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         handler.clone(),
         pairing.clone(),
     ));
+    if active_sim == Sim::Publisher {
+        controls.start();
+    }
     supervisor.start(active_sim);
     let settings_state = SettingsState::new(
         handler.clone(),
@@ -157,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pairing,
         Arc::new(crate::config::FileConfigStore),
         supervisor,
+        controls,
     );
 
     let settings_bind = cli.settings_bind;

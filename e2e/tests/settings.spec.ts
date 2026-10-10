@@ -232,6 +232,75 @@ test.describe('settings UI', () => {
     }
   });
 
+  test('publisher wheel controls show and clear persisted bindings', async ({ page }) => {
+    const appDataDir = tmpAppDataDir();
+    const settingsPort = await getFreePort();
+    const controlsPath = path.join(appDataDir, 'SimRaceCenter', 'controls.toml');
+    fs.mkdirSync(path.dirname(controlsPath), { recursive: true });
+    fs.writeFileSync(
+      controlsPath,
+      [
+        'enabled = true',
+        'debounce_ms = 250',
+        'focus_cooldown_ms = 30000',
+        'toggle_cooldown_ms = 3000',
+        'approve_cooldown_ms = 2000',
+        '',
+        '[[bindings]]',
+        'action = "approve_yes"',
+        'device = "VID_1234&PID_5678"',
+        'button = 7',
+        '',
+      ].join('\n')
+    );
+    const child = spawnLauncher(appDataDir, settingsPort);
+
+    try {
+      await waitForServer(settingsPort);
+      await page.goto(`http://127.0.0.1:${settingsPort}/`);
+      await page.getByTestId('select-publisher').click();
+
+      await expect(page.getByTestId('wheel-controls')).toBeVisible();
+      await expect(page.getByTestId('wheel-binding-approve_yes')).toHaveText(
+        'VID_1234&PID_5678 · button 7'
+      );
+      for (const action of ['focus_me', 'broadcast_toggle', 'approve_no']) {
+        await expect(page.getByTestId(`wheel-row-${action}`)).toBeVisible();
+        await expect(page.getByTestId(`wheel-binding-${action}`)).toHaveText('Not bound');
+      }
+      await expect(page.getByTestId('wheel-status')).toHaveText(
+        'Wheel input not available on this platform'
+      );
+      await expect(page.getByTestId('wheel-bind-approve_yes')).toBeDisabled();
+
+      await page.getByTestId('wheel-clear-approve_yes').click();
+      await expect(page.getByTestId('wheel-binding-approve_yes')).toHaveText('Not bound');
+      expect(fs.readFileSync(controlsPath, 'utf8')).not.toContain('approve_yes');
+    } finally {
+      await killProcess(child);
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    }
+  });
+
+  test('wheel controls are hidden when iRacing is selected', async ({ page }) => {
+    const appDataDir = tmpAppDataDir();
+    const settingsPort = await getFreePort();
+    const child = spawnLauncher(appDataDir, settingsPort, ['--sim', 'publisher']);
+
+    try {
+      await waitForServer(settingsPort);
+      await page.goto(`http://127.0.0.1:${settingsPort}/`);
+      await expect(page.getByTestId('wheel-controls')).toBeVisible();
+
+      await page.getByTestId('select-iracing').click();
+      await expect(page.getByTestId('active-sim')).toHaveText('iRacing');
+      await expect(page.getByTestId('wheel-controls')).toBeHidden();
+    } finally {
+      await killProcess(child);
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    }
+  });
+
   test('switching hot-swaps the live MCP server', async ({ page }) => {
     const appDataDir = tmpAppDataDir();
     const settingsPort = await getFreePort();

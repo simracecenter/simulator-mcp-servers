@@ -106,9 +106,11 @@ files wait for the next launch.
 The publisher owns learned wheel-button bindings for `focus_me`, `broadcast_toggle`,
 `approve_yes`, and `approve_no`. Approval answers share a 2,000 ms cooldown and are emitted as
 the car-scoped `DRIVER_APPROVAL_ANSWERED` event with the requesting car, driver identity, request
-identity, and `answer` (`yes` or `no`). The launcher's settings page continues to select the
-active role; binding capture remains in the publisher controls subsystem. Installer and autostart
-remain out of scope, and the default listener remains unchanged for simulator roles.
+identity, and `answer` (`yes` or `no`). The launcher starts the Raw Input listener for the whole
+Publisher role. Bindings are learned in the settings page's WHEEL BUTTONS section and stored in
+`%APPDATA%\SimRaceCenter\controls.toml`. Presses reach the in-process engine through `ControlRelay`
+and are dropped while the engine is stopped. Installer and autostart remain out of scope, and the
+default listener remains unchanged for simulator roles.
 
 ## References
 

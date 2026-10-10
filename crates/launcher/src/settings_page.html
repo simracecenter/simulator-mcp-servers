@@ -155,6 +155,28 @@
   #unpair {
     margin-top: 12px;
   }
+  .pairing button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+  .wheel-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 8px;
+    align-items: center;
+    padding: 8px 0;
+    border-top: 1px solid #1F2937;
+  }
+  .wheel-binding {
+    color: var(--muted);
+    font-size: .8rem;
+    overflow-wrap: anywhere;
+  }
+  .wheel-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 8px;
+  }
 </style>
 </head>
 <body>
@@ -196,6 +218,45 @@
     <div class="pairing-value" id="pairing-status" data-testid="pairing-status">Not paired</div>
     <button id="unpair" class="secondary-action" data-testid="unpair" type="button">CLEAR DIRECTORS</button>
   </div>
+  <div class="pairing" id="wheel-controls" data-testid="wheel-controls">
+    <h2>WHEEL BUTTONS</h2>
+    <div class="pairing-value" id="wheel-status" data-testid="wheel-status" role="status">Starting wheel input…</div>
+    <div class="pairing-value" id="wheel-error" data-testid="wheel-error" role="status" hidden></div>
+    <div class="wheel-row" data-testid="wheel-row-focus_me">
+      <span>Focus on me</span>
+      <span class="wheel-binding" id="wheel-binding-focus_me" data-testid="wheel-binding-focus_me">Not bound</span>
+      <div class="wheel-actions">
+        <button id="wheel-bind-focus_me" data-testid="wheel-bind-focus_me" type="button" disabled>BIND</button>
+        <button id="wheel-clear-focus_me" data-testid="wheel-clear-focus_me" type="button" disabled>CLEAR</button>
+      </div>
+    </div>
+    <div class="wheel-row" data-testid="wheel-row-broadcast_toggle">
+      <span>Pause / resume auto broadcast</span>
+      <span class="wheel-binding" id="wheel-binding-broadcast_toggle" data-testid="wheel-binding-broadcast_toggle">Not bound</span>
+      <div class="wheel-actions">
+        <button id="wheel-bind-broadcast_toggle" data-testid="wheel-bind-broadcast_toggle" type="button" disabled>BIND</button>
+        <button id="wheel-clear-broadcast_toggle" data-testid="wheel-clear-broadcast_toggle" type="button" disabled>CLEAR</button>
+      </div>
+    </div>
+    <div class="wheel-row" data-testid="wheel-row-approve_yes">
+      <span>Approve (yes)</span>
+      <span class="wheel-binding" id="wheel-binding-approve_yes" data-testid="wheel-binding-approve_yes">Not bound</span>
+      <div class="wheel-actions">
+        <button id="wheel-bind-approve_yes" data-testid="wheel-bind-approve_yes" type="button" disabled>BIND</button>
+        <button id="wheel-clear-approve_yes" data-testid="wheel-clear-approve_yes" type="button" disabled>CLEAR</button>
+      </div>
+    </div>
+    <div class="wheel-row" data-testid="wheel-row-approve_no">
+      <span>Decline (no)</span>
+      <span class="wheel-binding" id="wheel-binding-approve_no" data-testid="wheel-binding-approve_no">Not bound</span>
+      <div class="wheel-actions">
+        <button id="wheel-bind-approve_no" data-testid="wheel-bind-approve_no" type="button" disabled>BIND</button>
+        <button id="wheel-clear-approve_no" data-testid="wheel-clear-approve_no" type="button" disabled>CLEAR</button>
+      </div>
+    </div>
+    <div class="pairing-label">Last press</div>
+    <div class="pairing-value" id="wheel-last-press" data-testid="wheel-last-press">No wheel presses yet</div>
+  </div>
 </div>
 <script>
 const optIracing = document.getElementById('opt-iracing');
@@ -204,12 +265,18 @@ const optPublisher = document.getElementById('opt-publisher');
 const activeEl = document.getElementById('active-sim');
 const statusEl = document.getElementById('connection-status');
 const pairingEl = document.getElementById('rig-pairing');
+const wheelControlsEl = document.getElementById('wheel-controls');
 const pairingCodeEl = document.getElementById('pairing-code');
 const fingerprintEl = document.getElementById('cert-fingerprint');
 const publishingToEl = document.getElementById('publishing-to');
 const directorListEl = document.getElementById('director-list');
 const pairingStatusEl = document.getElementById('pairing-status');
 const unpairEl = document.getElementById('unpair');
+const wheelStatusEl = document.getElementById('wheel-status');
+const wheelErrorEl = document.getElementById('wheel-error');
+const wheelLastPressEl = document.getElementById('wheel-last-press');
+let wheelLearning = null;
+const wheelActions = ['focus_me', 'broadcast_toggle', 'approve_yes', 'approve_no'];
 
 function setActive(sim, connected, toolNames) {
   const simName = sim === 'lmu' ? 'LMU' : (sim === 'publisher' ? 'Publisher' : 'iRacing');
@@ -223,6 +290,7 @@ function setActive(sim, connected, toolNames) {
   optPublisher.classList.toggle('active', sim === 'publisher');
   optPublisher.setAttribute('aria-pressed', sim === 'publisher');
   pairingEl.classList.toggle('active', sim === 'publisher');
+  wheelControlsEl.classList.toggle('active', sim === 'publisher');
   console.log('Telemetry source:', simName, 'Tools:', (toolNames || []).length);
 }
 
@@ -268,15 +336,62 @@ function setPairing(data) {
   }
 }
 
-function renderStatus(data) {
+async function renderStatus(data) {
   setActive(data.sim, data.connected, data.toolNames);
   setPairing(data);
+  await loadControls();
 }
 
 async function loadStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
-  renderStatus(data);
+  await renderStatus(data);
+}
+
+async function loadControls() {
+  try {
+    const res = await fetch('/api/controls');
+    if (!res.ok) throw new Error(`unexpected status ${res.status} from /api/controls`);
+    const data = await res.json();
+    wheelLearning = data.learning;
+    if (data.listening) {
+      wheelStatusEl.textContent = `Listening for wheel buttons${
+        data.devicesSeen > 0 ? ` (${data.devicesSeen} devices seen)` : ''
+      }`;
+    } else if (data.lastError) {
+      wheelStatusEl.textContent = `Wheel input unavailable: ${data.lastError}`;
+    } else if (!data.available) {
+      wheelStatusEl.textContent = 'Wheel input not available on this platform';
+    } else {
+      wheelStatusEl.textContent = 'Starting wheel input…';
+    }
+    wheelErrorEl.hidden = !data.lastError;
+    wheelErrorEl.textContent = data.lastError || '';
+    for (const action of wheelActions) {
+      const binding = data.bindings.find((item) => item.action === action);
+      const bindingEl = document.getElementById(`wheel-binding-${action}`);
+      const bindEl = document.getElementById(`wheel-bind-${action}`);
+      const clearEl = document.getElementById(`wheel-clear-${action}`);
+      const isBound = Boolean(binding && binding.device && binding.button !== null);
+      bindingEl.textContent = isBound ? `${binding.device} · button ${binding.button}` : 'Not bound';
+      bindEl.disabled = !data.listening;
+      bindEl.textContent = data.learning === action
+        ? 'PRESS A WHEEL BUTTON… (click to cancel)'
+        : 'BIND';
+      clearEl.disabled = !isBound;
+    }
+    if (data.lastRequest) {
+      const action = data.bindings.find((item) => item.action === data.lastRequest.action);
+      const time = new Date(data.lastRequest.atMs).toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      });
+      wheelLastPressEl.textContent = `${action ? action.label : data.lastRequest.action} at ${time}`;
+    } else {
+      wheelLastPressEl.textContent = 'No wheel presses yet';
+    }
+  } catch (error) {
+    console.warn('Could not load wheel controls:', error);
+  }
 }
 
 async function selectSim(sim) {
@@ -286,7 +401,7 @@ async function selectSim(sim) {
     body: JSON.stringify({ sim })
   });
   const data = await res.json();
-  renderStatus(data);
+  await renderStatus(data);
 }
 
 async function revokeDirector(id) {
@@ -296,13 +411,23 @@ async function revokeDirector(id) {
     body: JSON.stringify({ id })
   });
   if (!res.ok) return;
-  renderStatus(await res.json());
+  await renderStatus(await res.json());
 }
 
 async function unpair() {
   if (!window.confirm('Remove all paired Directors?')) return;
   const res = await fetch('/api/unpair', { method: 'POST' });
-  renderStatus(await res.json());
+  await renderStatus(await res.json());
+}
+
+async function postControl(path, action) {
+  const res = await fetch(`/api/controls/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: action ? JSON.stringify({ action }) : undefined
+  });
+  if (!res.ok) throw new Error(`unexpected status ${res.status} from /api/controls/${path}`);
+  await loadControls();
 }
 
 optIracing.addEventListener('click', () => selectSim('iracing'));
@@ -312,9 +437,20 @@ optIracing.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key =
 optLmu.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('lmu'); });
 optPublisher.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') selectSim('publisher'); });
 unpairEl.addEventListener('click', unpair);
+for (const action of wheelActions) {
+  document.getElementById(`wheel-bind-${action}`).addEventListener('click', () => {
+    postControl(wheelLearning === action ? 'cancel' : 'learn', wheelLearning === action ? null : action);
+  });
+  document.getElementById(`wheel-clear-${action}`).addEventListener('click', () => {
+    postControl('clear', action);
+  });
+}
 
 loadStatus();
 setInterval(loadStatus, 5000);
+setInterval(() => {
+  if (wheelLearning) loadControls();
+}, 500);
 </script>
 </body>
 </html>

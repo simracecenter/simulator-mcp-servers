@@ -1,12 +1,58 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #[cfg(windows)]
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::{mpsc::Sender, Mutex};
 use std::time::SystemTime;
 
 use serde::Serialize;
 
 use crate::secret::SecretString;
+
+pub struct ControlRelay {
+    tx: Mutex<Option<Sender<publisher::controls::ControlRequest>>>,
+}
+
+impl ControlRelay {
+    pub fn new() -> Self {
+        Self {
+            tx: Mutex::new(None),
+        }
+    }
+
+    pub fn attach(&self, tx: Sender<publisher::controls::ControlRequest>) {
+        if let Ok(mut slot) = self.tx.lock() {
+            *slot = Some(tx);
+        }
+    }
+
+    pub fn detach(&self) {
+        if let Ok(mut slot) = self.tx.lock() {
+            *slot = None;
+        }
+    }
+
+    pub fn send(&self, request: publisher::controls::ControlRequest) -> bool {
+        let Ok(mut slot) = self.tx.lock() else {
+            return false;
+        };
+        let Some(tx) = slot.as_ref() else {
+            return false;
+        };
+        if tx.send(request).is_ok() {
+            true
+        } else {
+            *slot = None;
+            false
+        }
+    }
+}
+
+impl Default for ControlRelay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct LaunchSpec {
     pub ingest_url: String,
@@ -64,11 +110,16 @@ struct Inner {
 #[cfg(windows)]
 pub struct InProcessEngine {
     inner: Mutex<Inner>,
+    relay: Arc<ControlRelay>,
 }
 
 #[cfg(windows)]
 impl InProcessEngine {
     pub fn new() -> Self {
+        Self::with_relay(Arc::new(ControlRelay::new()))
+    }
+
+    pub fn with_relay(relay: Arc<ControlRelay>) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 running: None,
@@ -77,10 +128,11 @@ impl InProcessEngine {
                 handle: None,
                 snapshot: EngineSnapshot::default(),
             }),
+            relay,
         }
     }
 
-    fn reap_finished(inner: &mut Inner) {
+    fn reap_finished(inner: &mut Inner, relay: &ControlRelay) {
         let finished = inner
             .handle
             .as_ref()
@@ -106,6 +158,7 @@ impl InProcessEngine {
         inner.running = None;
         inner.status = None;
         inner.controls_tx = None;
+        relay.detach();
     }
 
     fn copy_status(inner: &Inner) -> EngineSnapshot {
@@ -153,7 +206,7 @@ impl PublisherEngine for InProcessEngine {
             .inner
             .lock()
             .map_err(|_| "publisher engine lock is poisoned".to_string())?;
-        Self::reap_finished(&mut inner);
+        Self::reap_finished(&mut inner, &self.relay);
         if inner.handle.is_some() {
             return Ok(());
         }
@@ -188,6 +241,7 @@ impl PublisherEngine for InProcessEngine {
             })
             .map_err(|error| format!("failed to spawn publisher engine: {error}"))?;
 
+        self.relay.attach(controls_tx.clone());
         inner.running = Some(running);
         inner.status = Some(status);
         inner.controls_tx = Some(controls_tx);
@@ -201,6 +255,7 @@ impl PublisherEngine for InProcessEngine {
     }
 
     fn stop(&self) {
+        self.relay.detach();
         let running = self
             .inner
             .lock()
@@ -217,7 +272,7 @@ impl PublisherEngine for InProcessEngine {
                 .lock()
                 .ok()
                 .map(|mut inner| {
-                    Self::reap_finished(&mut inner);
+                    Self::reap_finished(&mut inner, &self.relay);
                     inner.handle.is_none()
                 })
                 .unwrap_or(true);
@@ -243,7 +298,7 @@ impl PublisherEngine for InProcessEngine {
                 ..EngineSnapshot::default()
             };
         };
-        Self::reap_finished(&mut inner);
+        Self::reap_finished(&mut inner, &self.relay);
         Self::copy_status(&inner)
     }
 }
@@ -261,5 +316,48 @@ impl PublisherEngine for UnsupportedEngine {
 
     fn snapshot(&self) -> EngineSnapshot {
         EngineSnapshot::default()
+    }
+}
+
+#[cfg(test)]
+mod control_relay_tests {
+    use super::ControlRelay;
+    use publisher::controls::{simulated_request, ControlAction};
+
+    #[test]
+    fn send_without_an_attached_engine_returns_false() {
+        assert!(!ControlRelay::new().send(simulated_request(ControlAction::ApproveYes, 1)));
+    }
+
+    #[test]
+    fn attached_engine_receives_requests() {
+        let relay = ControlRelay::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        relay.attach(tx);
+        let request = simulated_request(ControlAction::ApproveYes, 42);
+
+        assert!(relay.send(request.clone()));
+        assert_eq!(rx.recv().unwrap(), request);
+    }
+
+    #[test]
+    fn detach_drops_subsequent_requests() {
+        let relay = ControlRelay::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        relay.attach(tx);
+        relay.detach();
+
+        assert!(!relay.send(simulated_request(ControlAction::ApproveNo, 42)));
+    }
+
+    #[test]
+    fn disconnected_receiver_drops_requests_and_detaches() {
+        let relay = ControlRelay::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        relay.attach(tx);
+        drop(rx);
+
+        assert!(!relay.send(simulated_request(ControlAction::ApproveNo, 42)));
+        assert!(!relay.send(simulated_request(ControlAction::ApproveNo, 43)));
     }
 }
