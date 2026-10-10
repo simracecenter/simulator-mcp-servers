@@ -30,6 +30,15 @@ pub struct PairingRecord {
     pub paired_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedDirector {
+    pub id: Uuid,
+    pub name: String,
+    pub fingerprint: String,
+    pub paired_at: String,
+}
+
 pub trait PairingStore: Send + Sync {
     fn load(&self) -> Result<LauncherConfig, String>;
     fn save(&self, config: &LauncherConfig) -> Result<(), String>;
@@ -175,6 +184,25 @@ impl PairingState {
             .unwrap_or_default()
     }
 
+    pub fn directors(&self) -> Vec<PairedDirector> {
+        self.store
+            .load()
+            .map(|mut config| {
+                config.migrate_pairings();
+                config
+                    .pairings
+                    .into_iter()
+                    .map(|pairing| PairedDirector {
+                        id: pairing.credential_id,
+                        name: pairing.director_name,
+                        fingerprint: pairing.director_fingerprint,
+                        paired_at: pairing.paired_at,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn device_id(&self) -> Option<Uuid> {
         self.store.load().ok().and_then(|config| config.device_id)
     }
@@ -265,6 +293,24 @@ impl PairingState {
         })
     }
 
+    pub fn revoke_director(&self, id: Uuid) -> Result<bool, String> {
+        let mut config = self.store.load()?;
+        config.migrate_pairings();
+        let paired = config
+            .pairings
+            .iter()
+            .any(|pairing| pairing.credential_id == id);
+        if !paired {
+            return Ok(false);
+        }
+        config
+            .pairings
+            .retain(|pairing| pairing.credential_id != id);
+        self.store.save(&config)?;
+        self.credentials.revoke(id);
+        Ok(true)
+    }
+
     pub fn unpair(&self) -> Result<(), String> {
         let mut config = self.store.load()?;
         config.migrate_pairings();
@@ -329,12 +375,32 @@ fn decode_digest(value: &str) -> Result<[u8; 32], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use tower::ServiceExt;
 
     fn state(
         store: Arc<InMemoryPairingStore>,
         credentials: Arc<CredentialRegistry>,
     ) -> PairingState {
         PairingState::new(credentials, store, "rig1".to_string(), "AA:BB".to_string()).unwrap()
+    }
+
+    async fn credential_status(app: &axum::Router, credential: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
     }
 
     fn request(code: impl Into<String>) -> PairRequest {
@@ -378,6 +444,63 @@ mod tests {
         assert_eq!(
             pairing.director_names(),
             vec!["Director", "Backup Director"]
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_director_removes_only_its_grant() {
+        let store = Arc::new(InMemoryPairingStore::new(LauncherConfig::default()));
+        let credentials = Arc::new(CredentialRegistry::new());
+        let pairing = Arc::new(state(store.clone(), credentials));
+        let first_response = pairing.pair(request(pairing.pairing_code())).unwrap();
+        let first = pairing.directors()[0].clone();
+        let mut second_request = request(pairing.pairing_code());
+        second_request.director.name = "Backup Director".to_string();
+        second_request.director.ingest_fingerprint = "bb".repeat(32);
+        let second_response = pairing.pair(second_request).unwrap();
+        let second = pairing.directors()[1].clone();
+
+        let app = crate::pair_server::build_publisher_router(
+            Arc::new(crate::runner::SwappableHandler::new(
+                crate::runner::build_handler(crate::config::Sim::Publisher),
+            )),
+            pairing.clone(),
+        );
+        assert_eq!(
+            credential_status(&app, &first_response.credential).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            credential_status(&app, &second_response.credential).await,
+            StatusCode::OK
+        );
+
+        assert!(pairing.revoke_director(first.id).unwrap());
+        assert_eq!(pairing.directors(), vec![second.clone()]);
+        assert_eq!(
+            store
+                .config()
+                .pairings
+                .iter()
+                .map(|pairing| pairing.credential_id)
+                .collect::<Vec<_>>(),
+            vec![second.id]
+        );
+        assert_eq!(
+            credential_status(&app, &first_response.credential).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            credential_status(&app, &second_response.credential).await,
+            StatusCode::OK
+        );
+
+        let pairings_before_unknown = store.config().pairings;
+        assert!(!pairing.revoke_director(Uuid::new_v4()).unwrap());
+        assert_eq!(store.config().pairings, pairings_before_unknown);
+        assert_eq!(
+            credential_status(&app, &second_response.credential).await,
+            StatusCode::OK
         );
     }
 

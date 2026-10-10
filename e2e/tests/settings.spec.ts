@@ -132,6 +132,59 @@ test.describe('settings UI', () => {
     }
   });
 
+  test('removes one paired Director from the Console', async ({ page }) => {
+    const appDataDir = tmpAppDataDir();
+    const settingsPort = await getFreePort();
+    const mcpPort = await getFreePort();
+    const child = spawnLauncher(appDataDir, settingsPort, [
+      '--sim',
+      'publisher',
+      '--transport',
+      'http',
+      '--bind',
+      `127.0.0.1:${mcpPort}`,
+    ]);
+
+    try {
+      await waitForServer(settingsPort);
+
+      async function pairDirector(name: string, fingerprint: string): Promise<void> {
+        const statusResponse = await fetch(`http://127.0.0.1:${settingsPort}/api/status`);
+        expect(statusResponse.ok).toBe(true);
+        const status = (await statusResponse.json()) as { pairingCode: string };
+        const response = await fetch(`http://127.0.0.1:${mcpPort}/pair`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pairingCode: status.pairingCode,
+            director: {
+              name,
+              ingestUrl: 'https://director.example/ingest',
+              ingestFingerprint: fingerprint,
+            },
+          }),
+        });
+        expect(response.status).toBe(200);
+      }
+
+      await pairDirector('Primary Director', 'aa'.repeat(32));
+      await pairDirector('Backup Director', 'bb'.repeat(32));
+      await page.goto(`http://127.0.0.1:${settingsPort}/`);
+      await expect(page.getByTestId('director-row')).toHaveCount(2);
+
+      const primaryRow = page
+        .getByTestId('director-row')
+        .filter({ hasText: 'Primary Director' });
+      await primaryRow.getByTestId('remove-director').click();
+
+      await expect(page.getByTestId('director-row')).toHaveCount(1);
+      await expect(page.getByTestId('director-row')).toContainText('Backup Director');
+    } finally {
+      await killProcess(child);
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    }
+  });
+
   test('select iRacing via the UI', async ({ page }) => {
     const appDataDir = tmpAppDataDir();
     const settingsPort = await getFreePort();

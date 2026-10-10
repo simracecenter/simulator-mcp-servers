@@ -151,7 +151,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pairing.clone(),
     ));
     supervisor.start(active_sim);
-    let settings_state = SettingsState::new(handler.clone(), active_sim, pairing, supervisor);
+    let settings_state = SettingsState::new(
+        handler.clone(),
+        active_sim,
+        pairing,
+        Arc::new(crate::config::FileConfigStore),
+        supervisor,
+    );
 
     let settings_bind = cli.settings_bind;
     let settings_url = format!("http://{}/", settings_bind);

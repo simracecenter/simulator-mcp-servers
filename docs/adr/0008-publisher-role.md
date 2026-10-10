@@ -49,15 +49,16 @@ in the Console and used to key grants. `POST /pair` mints a
 persistent credential after validating the one-shot three-digit code. A Rig
 may retain independently revocable grants for multiple Directors, identified
 by their normalized ingest certificate fingerprints. Re-pairing the same
-Director replaces its previous grant; the local Clear Directors action revokes
-all grants. Pairing establishes trust only: the Director that sends
-`publisher_start` first sends `publisher_configure` with its own ingest
-destination. Grants remain in launcher configuration while another exclusive
-role is active, so returning the Rig to `publisher` does not require pairing
-again. The five-strike lockout, publisher-only grant scope, digest-only
-credential persistence, and revocation protect the exception to ADR 0007's
-rule that credential issuance is a Rust API rather than an unauthenticated
-network endpoint.
+Director replaces its previous grant; the Console lists each grant with its
+own Remove action (Clear Directors revokes all), and shows the current ingest
+destination, resolved to the paired Director by ingest fingerprint. Pairing
+establishes trust only: the Director that sends `publisher_start` first sends
+`publisher_configure` with its own ingest destination. Grants remain in
+launcher configuration while another exclusive role is active, so returning
+the Rig to `publisher` does not require pairing again. The five-strike lockout,
+publisher-only grant scope, digest-only credential persistence, and revocation
+protect the exception to ADR 0007's rule that credential issuance is a Rust API
+rather than an unauthenticated network endpoint.
 
 ## Plaintext publisher control (2026-09-22 amendment)
 

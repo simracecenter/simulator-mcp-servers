@@ -8,8 +8,9 @@ description: Smoke-test launcher MCP/settings transports, Windows native builds,
 The launcher (`crates/launcher`) hosts the MCP transport (`--bind`, default
 `0.0.0.0:8765`, routes `GET /healthz` + `GET`/`POST`/`DELETE /mcp`) and settings
 server (`--settings-bind`, default `127.0.0.1:8766`, routes `GET /healthz`,
-`/api/status`, `POST /api/sim`). Simulator roles use plain HTTP. Publisher
-uses HTTPS and additionally exposes `POST /pair`; settings remains loopback HTTP.
+`/api/status`, `POST /api/sim`, `POST /api/revoke-director`). Simulator roles use plain
+HTTP. Publisher uses HTTPS and additionally exposes `POST /pair`; settings remains loopback
+HTTP.
 The tray UI only builds on Windows, so on Linux/CI use `--headless`.
 
 Transport-only shell tests need text evidence, not recording. If testing settings
