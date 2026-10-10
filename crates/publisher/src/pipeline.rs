@@ -456,7 +456,8 @@ pub fn run_pipeline(
                         last_session_num = Some(frame.session_num);
                     } else {
                         session_info_read_failures = session_info_read_failures.saturating_add(1);
-                        if session_info_read_failures == 1 || session_info_read_failures % 300 == 0
+                        if session_info_read_failures == 1
+                            || session_info_read_failures.is_multiple_of(300)
                         {
                             log_warn!(
                                 "[publisher] SessionInfo read failed (update={}, session_num={}, attempts={})",
@@ -664,7 +665,9 @@ pub fn run_pipeline(
                 // events against a ghost session keyed on subSessionId=0.
                 if sub_session_id == 0 {
                     sub_session_blocked_frames = sub_session_blocked_frames.saturating_add(1);
-                    if sub_session_blocked_frames == 1 || sub_session_blocked_frames % 300 == 0 {
+                    if sub_session_blocked_frames == 1
+                        || sub_session_blocked_frames.is_multiple_of(300)
+                    {
                         log_warn!(
                             "[publisher] publishing paused: unresolved subSessionId (SessionInfoUpdate={})",
                             frame.session_info_update,

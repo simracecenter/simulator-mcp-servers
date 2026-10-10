@@ -1131,7 +1131,7 @@ impl SdkAdapter {
         let snapshot = snapshot_for_read()?;
         let root = &snapshot.session_document;
         let wi = |k: &str| -> String {
-            yaml_str_at(&root, &["WeekendInfo", k])
+            yaml_str_at(root, &["WeekendInfo", k])
                 .unwrap_or_default()
                 .to_string()
         };
@@ -1160,8 +1160,8 @@ impl SdkAdapter {
                 .unwrap_or(false)
         };
         let weather = |k: &str| -> String {
-            yaml_str_at(&root, &["WeekendInfo", "WeatherParams", k])
-                .or_else(|_| yaml_str_at(&root, &["WeekendInfo", k]))
+            yaml_str_at(root, &["WeekendInfo", "WeatherParams", k])
+                .or_else(|_| yaml_str_at(root, &["WeekendInfo", k]))
                 .unwrap_or_default()
                 .to_string()
         };

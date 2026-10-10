@@ -104,7 +104,7 @@ mod platform {
             let mmap_name = mmap_name();
             let mmap_handle =
                 unsafe { OpenFileMappingW(FILE_MAP_READ, 0, wide(&mmap_name).as_ptr()) };
-            if mmap_handle == std::ptr::null_mut() || mmap_handle == INVALID_HANDLE_VALUE {
+            if mmap_handle.is_null() || mmap_handle == INVALID_HANDLE_VALUE {
                 return Err(SharedMemError::NotRunning);
             }
 
@@ -157,7 +157,7 @@ mod platform {
 
             let event_name = event_name();
             let event_handle = unsafe { OpenEventW(SYNCHRONIZE, 0, wide(&event_name).as_ptr()) };
-            if event_handle == std::ptr::null_mut() || event_handle == INVALID_HANDLE_VALUE {
+            if event_handle.is_null() || event_handle == INVALID_HANDLE_VALUE {
                 unsafe {
                     UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
                         Value: map_view as *mut _,
@@ -236,7 +236,7 @@ mod platform {
         /// `true` if the iRacing status field still shows a live session.
         pub fn is_connected(&self) -> bool {
             let mmap = unsafe { std::slice::from_raw_parts(self.map_view, MAX_MMAP_SIZE) };
-            parse_header(mmap).map_or(false, |h| is_connected(h.status))
+            parse_header(mmap).is_some_and(|h| is_connected(h.status))
         }
     }
 
