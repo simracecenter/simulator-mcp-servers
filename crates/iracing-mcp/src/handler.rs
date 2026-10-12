@@ -1241,11 +1241,13 @@ fn verify_search_event_state(
     match mode {
         ReplaySearchMode::ToStart => current.replay_frame_num <= 4,
         ReplaySearchMode::ToEnd => {
-            let near_end = current.replay_frame_num_end > 0
-                && current.replay_frame_num >= current.replay_frame_num_end.saturating_sub(4);
+            // replay_frame_num_end counts frames behind the live edge, not a
+            // tape position — comparing the playhead against it always passed.
+            // Require the tape to actually be at the live edge, or evidence the
+            // search moved the playhead or the tape end.
             let jumped_far = (current.replay_frame_num - before.replay_frame_num).abs() >= 1000;
             let end_changed = current.replay_frame_num_end != before.replay_frame_num_end;
-            near_end || jumped_far || end_changed
+            current.at_live_edge() || jumped_far || end_changed
         }
         ReplaySearchMode::PrevSession
         | ReplaySearchMode::PrevLap
