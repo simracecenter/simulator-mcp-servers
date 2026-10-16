@@ -833,6 +833,46 @@ DriverInfo:
     }
 }
 
+#[cfg(test)]
+mod standings_tests {
+    use super::*;
+
+    #[test]
+    fn class_position_is_normalized_to_one_based() {
+        let document: YamlValue = serde_yaml::from_str(
+            r#"
+SessionInfo:
+  Sessions:
+    - SessionNum: 2
+      SessionType: Race
+      ResultsPositions:
+        - CarIdx: 7
+          Position: 3
+          ClassPosition: 0
+        - CarIdx: 9
+          Position: 5
+          ClassPosition: 1
+        - CarIdx: 11
+          Position: 6
+"#,
+        )
+        .expect("test YAML should parse");
+
+        let standings = standings_from_document(&document, 2).expect("standings should build");
+
+        assert_eq!(standings.session_num, 2);
+        assert_eq!(standings.session_type, "Race");
+        assert_eq!(
+            standings
+                .positions
+                .iter()
+                .map(|p| (p.car_idx, p.position, p.class_position))
+                .collect::<Vec<_>>(),
+            vec![(7, 3, 1), (9, 5, 2), (11, 6, 0)]
+        );
+    }
+}
+
 #[cfg(windows)]
 #[async_trait]
 impl IracingAdapter for SdkAdapter {
@@ -1403,7 +1443,14 @@ fn standings_from_document(
                         |k: &str| -> f64 { p.get(k).and_then(|v| v.as_f64()).unwrap_or(-1.0) };
                     SessionPosition {
                         position: i_f("Position"),
-                        class_position: i_f("ClassPosition"),
+                        // iRacing's ResultsPositions ClassPosition is 0-based;
+                        // normalize to the 1-based convention used elsewhere
+                        // (0 stays reserved for "unknown").
+                        class_position: p
+                            .get("ClassPosition")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as i32 + 1)
+                            .unwrap_or(0),
                         car_idx: i_f("CarIdx"),
                         lap: i_f("Lap"),
                         laps_complete: i_f("LapsComplete"),

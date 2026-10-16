@@ -343,7 +343,7 @@ fn tool_descriptors() -> Vec<Value> {
         }),
         json!({
             "name": "get_standings",
-            "description": "Returns current session standings and timing for each driver.",
+            "description": "Returns current session standings and timing for each driver. `position` (overall) and `classPosition` are 1-based; 0 means unknown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
