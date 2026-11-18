@@ -5,8 +5,8 @@ use std::collections::VecDeque;
 use crate::race_event::RaceEvent;
 
 pub struct FuelProjection {
-    lap_fuel: Vec<(u8, f32, bool)>,
-    last_pit_lap: Option<u8>,
+    lap_fuel: Vec<(u32, f32, bool)>,
+    last_pit_lap: Option<u32>,
     in_pit: bool,
     clean_deltas: VecDeque<f32>,
     last_clean_fuel: Option<f32>,
@@ -27,7 +27,7 @@ impl FuelProjection {
 
     pub fn on_lap_crossing(
         &mut self,
-        lap: u8,
+        lap: u32,
         session_time: f32,
         fuel: f32,
         is_pit_lap: bool,

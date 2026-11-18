@@ -23,7 +23,7 @@ const RESOLUTION_GRACE_CADENCES: u8 = 2;
 #[derive(Clone, Debug)]
 pub struct ActiveIncidentCluster {
     pub incident_id: u32,
-    pub lap: u8,
+    pub lap: u32,
     pub bucket: u8,
     pub car_idxs: Vec<u8>,
     pub started_session_time: f32,
@@ -65,14 +65,14 @@ impl IncidentClusterDetector {
         &mut self,
         registry: &CarRegistry,
         n_anchors: usize,
-        lap: u8,
+        lap: u32,
         session_time: f32,
         session_tick: i64,
         is_full_caution: bool,
         hard_events: &VecDeque<HardEvent>,
     ) -> Vec<RaceEvent> {
         self.full_course_caution = is_full_caution;
-        self.laps_observed = self.laps_observed.max(lap as u32);
+        self.laps_observed = self.laps_observed.max(lap);
         let anchor_count = n_anchors.max(1);
         let bucket_of = |lap_dist_pct: f32| {
             ((lap_dist_pct * anchor_count as f32) as usize % anchor_count) as u8

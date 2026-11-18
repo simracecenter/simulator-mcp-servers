@@ -293,12 +293,16 @@ pub enum FlagScope {
 #[serde(tag = "event_type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RaceEvent {
     BattleEngaged {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         opponent_car_idx: u8,
         gap_s: f32,
         car_race_position: u8,
+        /// Class position of the car `car_race_position` describes. Omitted
+        /// when the SDK does not provide one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        car_class_position: Option<u8>,
         prior_skirmishes: u32,
         prior_attack_time_s: f32,
         engagement_started_at_session_time_s: f32,
@@ -306,22 +310,30 @@ pub enum RaceEvent {
         battle: Option<BattleIdentity>,
     },
     BattleBroken {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         opponent_car_idx: u8,
         final_gap_sec: Option<f32>,
         car_race_position: u8,
+        /// Class position of the car `car_race_position` describes. Omitted
+        /// when the SDK does not provide one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        car_class_position: Option<u8>,
         engagement_started_at_session_time_s: f32,
         #[serde(flatten)]
         battle: Option<BattleIdentity>,
     },
     BattleClosing {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         opponent_car_idx: u8,
         car_race_position: u8,
+        /// Class position of the car `car_race_position` describes. Omitted
+        /// when the SDK does not provide one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        car_class_position: Option<u8>,
         closing_rate_sec_per_lap: f32,
         slope_info: SlopeInfo,
         prior_skirmishes: u32,
@@ -330,7 +342,7 @@ pub enum RaceEvent {
         battle: Option<BattleIdentity>,
     },
     HorizonClosing {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         attacker_car_idx: u8,
         defender_car_idx: u8,
@@ -341,13 +353,13 @@ pub enum RaceEvent {
         estimated_laps_to_contact: u16,
     },
     HorizonClosingResolved {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         attacker_car_idx: u8,
         defender_car_idx: u8,
     },
     RaceGreen {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         /// `true` when this is the state the publisher found on connect rather
         /// than a green flag it saw fall.
@@ -355,11 +367,11 @@ pub enum RaceEvent {
         origin: LifecycleOrigin,
     },
     FlagYellowFullCourse {
-        lap: u8,
+        lap: u32,
         session_time: f32,
     },
     FlagYellowLocal {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         /// Car index of the vehicle that caused the yellow, if determinable.
         trigger_car_idx: Option<u8>,
@@ -374,70 +386,90 @@ pub enum RaceEvent {
         linked_incident_id: Option<u32>,
     },
     RaceCheckered {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         /// `true` when the session was already flagged as the publisher connected.
         synthetic: bool,
         origin: LifecycleOrigin,
     },
     IracingConnected {
-        lap: u8,
+        lap: u32,
         session_time: f32,
     },
     IracingDisconnected {
-        lap: u8,
+        lap: u32,
         session_time: f32,
     },
     DriverEnteredCar {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
     },
     DriverExitedCar {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
     },
     Overtake {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         car_idx: u8,
         overtaken_car_idx: Option<u8>,
         position_from: u8,
         position_to: u8,
         positions_gained: u8,
+        /// Class position at the end of the previous lap. Omitted when the
+        /// SDK does not provide one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position_from: Option<u8>,
+        /// Class position at the end of this lap. An overall pass of a car
+        /// from another class leaves it equal to `class_position_from`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position_to: Option<u8>,
     },
     OvertakeForLead {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         car_idx: u8,
         overtaken_car_idx: Option<u8>,
         position_from: u8,
         positions_gained: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position_from: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position_to: Option<u8>,
     },
     LapCompleted {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         lap_time_s: Option<f32>,
         best_lap_time_s: Option<f32>,
         position: u8,
+        /// Position within the car's class, 1-based. Omitted when the SDK does
+        /// not provide one (single-class data source, or car unclassified).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position: Option<u8>,
         pit_frames: u32,
     },
     PitEntry {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         position: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position: Option<u8>,
     },
     PitExit {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         position: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position: Option<u8>,
     },
     TireDegradation {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         lf_temp_c: f32,
         rf_temp_c: f32,
@@ -450,7 +482,7 @@ pub enum RaceEvent {
         hottest_corner: String,
     },
     FuelProjection {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         fuel_remaining_l: f32,
         fuel_per_lap_l: f32,
@@ -458,14 +490,14 @@ pub enum RaceEvent {
         is_provisional: bool,
     },
     FuelSavingTechnique {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         coast_duration_s: f32,
         coast_start_lap_dist_pct: f32,
         coast_start_speed_mps: f32,
     },
     IncidentAlert {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         car_idx: u8,
         driver_incident_count: Option<i32>,
@@ -486,7 +518,7 @@ pub enum RaceEvent {
         reason: String,
     },
     MicroSectorGain {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         bucket_from: u8,
         bucket_to: u8,
@@ -496,7 +528,7 @@ pub enum RaceEvent {
         technique_hint: String,
     },
     MicroSectorLoss {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         bucket_from: u8,
         bucket_to: u8,
@@ -505,7 +537,7 @@ pub enum RaceEvent {
         cumulative_delta_s: f32,
     },
     BrakingProfile {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         anchor_bucket: u8,
         brake_point_pct: f32,
@@ -517,7 +549,7 @@ pub enum RaceEvent {
         throttle_release_pct: f32,
     },
     TrafficIntercept {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         leader_car_idx: u8,
         traffic_car_idx: u8,
@@ -534,7 +566,7 @@ pub enum RaceEvent {
         predicted_intercept_session_time: f32,
     },
     VulnerabilityAlert {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         vulnerability: f32,
         defender_idx: u8,
@@ -545,13 +577,13 @@ pub enum RaceEvent {
         fuel_contribution: f32,
     },
     VulnerabilityResolved {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         defender_idx: u8,
         attacker_idx: u8,
     },
     IncidentCluster {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         session_tick: i64,
         incident_id: u32,
@@ -581,7 +613,7 @@ pub enum RaceEvent {
         corroboration: Option<String>,
     },
     IncidentClusterResolved {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         session_tick: i64,
         incident_id: u32,
@@ -591,7 +623,7 @@ pub enum RaceEvent {
         car_idxs: Vec<u8>,
     },
     TrafficCompressionZone {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         battle_attacker_idx: u8,
         battle_defender_idx: u8,
@@ -604,13 +636,13 @@ pub enum RaceEvent {
         first_intercept_bucket: u8,
     },
     PublisherHello {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         version: String,
         scope: String,
     },
     PublisherGoodbye {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         /// Machine-readable cause: `shutdown` or `session_transition`.
         reason: String,
@@ -619,7 +651,7 @@ pub enum RaceEvent {
         previous_sub_session_id: Option<i64>,
     },
     PublisherHeartbeat {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         version: String,
         events_enqueued_total: u64,
@@ -627,7 +659,7 @@ pub enum RaceEvent {
     /// Driver pressed their bound "focus on me" wheel button. Car-scoped so
     /// the sandbox can resolve the requesting car from the roster.
     FocusMeRequested {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         /// Idempotency key — stable across transport retries.
@@ -647,7 +679,7 @@ pub enum RaceEvent {
     },
     /// Driver answered the broadcast agent's pending yes/no question.
     DriverApprovalAnswered {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         /// Idempotency key — stable across transport retries.
@@ -671,10 +703,14 @@ pub enum RaceEvent {
     /// meant to cover: a rig that produces no narrative events for minutes at a
     /// time otherwise looks stale next to a busy midfield battle.
     DriverMaterial {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         player_car_idx: u8,
         position: u8,
+        /// Position within the car's class, 1-based. Omitted when the SDK does
+        /// not provide one (single-class data source, or car unclassified).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position: Option<u8>,
         laps_completed: i32,
         lap_dist_pct: f32,
         last_lap_time_s: Option<f32>,
@@ -706,11 +742,49 @@ pub enum RaceEvent {
         /// Wall-clock seconds since the previous `DRIVER_MATERIAL` from this rig.
         interval_s: f32,
     },
+    /// The rig's own car took the checkered flag: the result of this car's
+    /// session, read at the moment it crossed the line with the flag out.
+    ///
+    /// `RACE_CHECKERED` marks the flag falling for the overall leader; the
+    /// rest of the field is still racing until each car reaches the line, so a
+    /// standings snapshot taken at `RACE_CHECKERED` is not this car's result.
+    /// Emitted at most once per iRacing session (`SessionNum`), in whatever
+    /// kind of session went checkered — the envelope's `context.sessionType`
+    /// says which. Not emitted when the publisher connected with the flag
+    /// already out (it cannot tell whether the car had finished) or when the
+    /// car never reaches the line.
+    CarFinished {
+        lap: u32,
+        session_time: f32,
+        player_car_idx: u8,
+        /// Overall position at the line. 0 = unclassified.
+        position: u8,
+        /// Position within the car's class, 1-based. Omitted when the SDK does
+        /// not provide one (single-class data source, or car unclassified).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position: Option<u8>,
+        /// Laps this car completed, the finishing lap included.
+        laps_completed: i32,
+        best_lap_time_s: Option<f32>,
+        last_lap_time_s: Option<f32>,
+        /// The rig driver's own incident count (`PlayerCarMyIncidentCount`),
+        /// as on `DRIVER_MATERIAL`.
+        incident_count: i32,
+        /// Incident count of the driver in the car at the flag
+        /// (`PlayerCarDriverIncidentCount`). Omitted when the SDK does not
+        /// expose it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        driver_incident_count: Option<i32>,
+        /// Incident count of the whole team (`PlayerCarTeamIncidentCount`).
+        /// Omitted when the SDK does not expose it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        team_incident_count: Option<i32>,
+    },
     /// The publisher discarded all session-scoped state because iRacing moved to
     /// a different session. Consumers should drop cached car indices, battles,
     /// and driver bindings for `previous_sub_session_id` when they see this.
     SessionReset {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         previous_sub_session_id: Option<i64>,
         sub_session_id: i64,
@@ -728,7 +802,7 @@ pub enum RaceEvent {
     /// every `SessionNum`/`SessionState` change, and once when the session
     /// clock runs into its final stretch.
     SessionState {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         session_num: i32,
         previous_session_num: Option<i32>,
@@ -757,7 +831,7 @@ pub enum RaceEvent {
     /// Driver pressed their bound pause/resume button. Rig-scoped: it acts on
     /// the broadcast agent, not on a car.
     BroadcastControlRequested {
-        lap: u8,
+        lap: u32,
         session_time: f32,
         /// Always `toggle` — the sandbox owns pause/resume state.
         action: String,
@@ -827,6 +901,7 @@ pub enum RaceEventKind {
     SessionReset,
     BroadcastControlRequested,
     SessionState,
+    CarFinished,
 }
 
 impl RaceEventKind {
@@ -880,6 +955,7 @@ impl RaceEventKind {
             | Self::IncidentClusterResolved
             | Self::TrafficCompressionZone
             | Self::DriverMaterial
+            | Self::CarFinished
             | Self::FocusMeRequested
             | Self::DriverApprovalAnswered => EventScope::CarScoped,
         }
@@ -929,6 +1005,7 @@ impl RaceEvent {
             Self::SessionReset { .. } => RaceEventKind::SessionReset,
             Self::SessionState { .. } => RaceEventKind::SessionState,
             Self::BroadcastControlRequested { .. } => RaceEventKind::BroadcastControlRequested,
+            Self::CarFinished { .. } => RaceEventKind::CarFinished,
         }
     }
 

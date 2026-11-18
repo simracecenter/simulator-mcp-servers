@@ -9,7 +9,7 @@ pub struct TireDegradation {
     ema_lr: f32,
     ema_rr: f32,
     prev_ema: [Option<(f32, f32, f32, f32)>; 4],
-    lap_emas: Vec<(u8, f32, f32, f32, f32, f32)>,
+    lap_emas: Vec<(u32, f32, f32, f32, f32, f32)>,
     alpha: f32,
     lap_count: u32,
     was_pit_lap: bool,
@@ -41,7 +41,7 @@ impl TireDegradation {
 
     pub fn on_lap_crossing(
         &mut self,
-        lap: u8,
+        lap: u32,
         session_time: f32,
         is_pit_lap: bool,
     ) -> Option<RaceEvent> {
@@ -118,9 +118,9 @@ fn ema(prev: f32, sample: f32, alpha: f32) -> f32 {
     }
 }
 
-fn slope_per_min<F>(points: &[(u8, f32, f32, f32, f32, f32)], f: F) -> Option<f32>
+fn slope_per_min<F>(points: &[(u32, f32, f32, f32, f32, f32)], f: F) -> Option<f32>
 where
-    F: Fn(&(u8, f32, f32, f32, f32, f32)) -> f32,
+    F: Fn(&(u32, f32, f32, f32, f32, f32)) -> f32,
 {
     if points.len() < 2 {
         return None;
@@ -164,6 +164,10 @@ mod tests {
             session_time_remain: None,
             session_laps_remain: None,
             player_incident_count: 0,
+            player_driver_incident_count: None,
+            player_team_incident_count: None,
+            player_car_class_position: 0,
+            car_idx_class_position: vec![],
             car_idx_lap_completed: vec![],
             lf_temp_m: temp,
             rf_temp_m: temp,

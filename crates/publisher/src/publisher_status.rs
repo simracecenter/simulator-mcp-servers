@@ -22,7 +22,7 @@ pub struct PublisherStatus {
     pub session_type: Option<String>,
     /// "unlimited" or a lap count string.
     pub session_laps: Option<String>,
-    pub current_lap: u8,
+    pub current_lap: u32,
     pub session_tick: i64,
     pub session_time_secs: f64,
 

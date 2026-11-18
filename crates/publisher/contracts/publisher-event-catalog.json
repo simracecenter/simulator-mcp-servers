@@ -160,6 +160,10 @@
     {
       "scope": "SESSION_SCOPED",
       "type": "SESSION_STATE"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "CAR_FINISHED"
     }
   ],
   "schemaVersion": 1,

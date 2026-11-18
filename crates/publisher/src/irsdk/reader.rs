@@ -101,7 +101,19 @@ pub const REQUIRED_VARS: &[&str] = &[
     "CarIdxTrackSurface",
     // Optional — int array, same pattern as CarIdxPosition.
     "CarIdxLapCompleted",
+    // Optional — class standing, for multi-class sessions.
+    "PlayerCarClassPosition",
+    "CarIdxClassPosition",
+    // Optional — per-driver and team incident totals.
+    "PlayerCarDriverIncidentCount",
+    "PlayerCarTeamIncidentCount",
 ];
+
+/// Narrow a position read from the SDK to `u8`: anything outside `1..=255`
+/// (unclassified, negative sentinel) becomes 0 rather than wrapping.
+fn position_u8(raw: i32) -> u8 {
+    u8::try_from(raw).unwrap_or(0)
+}
 
 // ── Frame builder ─────────────────────────────────────────────────────────
 
@@ -145,7 +157,7 @@ pub fn build_frame(
     };
 
     let player_car_idx = read_i32(buf, pci_info.offset) as u8;
-    let lap = read_i32(buf, lap_info.offset) as u8;
+    let lap = read_i32(buf, lap_info.offset).max(0) as u32;
     let lap_dist_pct = read_f32(buf, ldp_info.offset);
     let player_car_pos = read_i32(buf, pcp_info.offset) as u8;
     let on_pit_road = read_bool(buf, opr_info.offset);
@@ -215,6 +227,35 @@ pub fn build_frame(
         .map(|v| read_i32(buf, v.offset))
         .unwrap_or(0);
 
+    let player_driver_incident_count = vars
+        .get("PlayerCarDriverIncidentCount")
+        .filter(|v| v.type_code == IR_INT)
+        .map(|v| read_i32(buf, v.offset));
+
+    let player_team_incident_count = vars
+        .get("PlayerCarTeamIncidentCount")
+        .filter(|v| v.type_code == IR_INT)
+        .map(|v| read_i32(buf, v.offset));
+
+    // Class positions are 1-based in live telemetry; 0 (or a negative
+    // sentinel) means the car is not classified yet.
+    let player_car_class_position = vars
+        .get("PlayerCarClassPosition")
+        .filter(|v| v.type_code == IR_INT)
+        .map(|v| position_u8(read_i32(buf, v.offset)))
+        .unwrap_or(0);
+
+    let car_idx_class_position = vars
+        .get("CarIdxClassPosition")
+        .filter(|v| v.type_code == IR_INT)
+        .map(|v| {
+            read_i32_array(buf, v.offset, v.count.min(64))
+                .into_iter()
+                .map(position_u8)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let car_idx_lap_completed = vars
         .get("CarIdxLapCompleted")
         .filter(|v| v.type_code == IR_INT)
@@ -280,6 +321,10 @@ pub fn build_frame(
         session_time_remain,
         session_laps_remain,
         player_incident_count,
+        player_driver_incident_count,
+        player_team_incident_count,
+        player_car_class_position,
+        car_idx_class_position,
         car_idx_lap_completed,
         lf_temp_m,
         rf_temp_m,
@@ -441,5 +486,71 @@ mod tests {
         assert_eq!(frame.car_idx_lap_dist_pct.len(), 3);
         assert_eq!(frame.car_idx_position, vec![1, 2, 3]);
         assert_eq!(frame.car_idx_on_pit_road, vec![false, true, false]);
+        // Optional variables the buffer does not carry.
+        assert_eq!(frame.player_car_class_position, 0);
+        assert!(frame.car_idx_class_position.is_empty());
+        assert_eq!(frame.player_class_position(), None);
+        assert_eq!(frame.player_driver_incident_count, None);
+        assert_eq!(frame.player_team_incident_count, None);
+    }
+
+    #[test]
+    fn lap_counter_does_not_wrap_past_255() {
+        let (mut buf, index) = make_test_buf();
+        buf[0x10..0x14].copy_from_slice(&256i32.to_le_bytes());
+        let frame = build_frame(&buf, &index, 0).expect("frame");
+        assert_eq!(frame.lap, 256);
+
+        buf[0x10..0x14].copy_from_slice(&1_000i32.to_le_bytes());
+        let frame = build_frame(&buf, &index, 0).expect("frame");
+        assert_eq!(frame.lap, 1_000);
+
+        // A negative sentinel clamps to 0 instead of becoming a huge lap.
+        buf[0x10..0x14].copy_from_slice(&(-1i32).to_le_bytes());
+        let frame = build_frame(&buf, &index, 0).expect("frame");
+        assert_eq!(frame.lap, 0);
+    }
+
+    #[test]
+    fn class_positions_and_incident_totals_are_read_when_present() {
+        let (mut buf, mut index) = make_test_buf();
+        //   0x40  PlayerCarClassPosition        i32
+        //   0x44  CarIdxClassPosition           i32×3
+        //   0x50  PlayerCarDriverIncidentCount  i32
+        //   0x54  PlayerCarTeamIncidentCount    i32
+        buf.resize(0x58, 0);
+        buf[0x40..0x44].copy_from_slice(&3i32.to_le_bytes());
+        for (i, v) in [1i32, -1, 2].into_iter().enumerate() {
+            let at = 0x44 + i * 4;
+            buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        buf[0x50..0x54].copy_from_slice(&4i32.to_le_bytes());
+        buf[0x54..0x58].copy_from_slice(&9i32.to_le_bytes());
+        for (name, offset, count) in [
+            ("PlayerCarClassPosition", 0x40, 1),
+            ("CarIdxClassPosition", 0x44, 3),
+            ("PlayerCarDriverIncidentCount", 0x50, 1),
+            ("PlayerCarTeamIncidentCount", 0x54, 1),
+        ] {
+            index.insert(
+                name.into(),
+                VarInfo {
+                    type_code: IR_INT,
+                    offset,
+                    count,
+                },
+            );
+        }
+
+        let frame = build_frame(&buf, &index, 0).expect("frame");
+        assert_eq!(frame.player_car_class_position, 3);
+        assert_eq!(frame.player_class_position(), Some(3));
+        // The unclassified sentinel becomes 0, not 255.
+        assert_eq!(frame.car_idx_class_position, vec![1, 0, 2]);
+        assert_eq!(frame.class_position_of(0), Some(1));
+        assert_eq!(frame.class_position_of(1), None);
+        assert_eq!(frame.class_position_of(9), None);
+        assert_eq!(frame.player_driver_incident_count, Some(4));
+        assert_eq!(frame.player_team_incident_count, Some(9));
     }
 }

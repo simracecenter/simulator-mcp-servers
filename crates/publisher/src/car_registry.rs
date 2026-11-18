@@ -35,8 +35,8 @@ pub struct CarState {
 
 pub struct OpponentHistory {
     pub car_idx: u8,
-    pub first_seen_lap: u8,
-    pub last_engaged_lap: Option<u8>,
+    pub first_seen_lap: u32,
+    pub last_engaged_lap: Option<u32>,
     pub last_state_forward: BattleState,
     pub last_state_defensive: BattleState,
     pub time_in_push_s: f32,
@@ -222,7 +222,7 @@ impl CarRegistry {
         opponent_idx: u8,
         state: &BattleState,
         is_pit_lap: bool,
-        lap: u8,
+        lap: u32,
     ) {
         let Some(car) = self.get_mut(player_idx) else {
             return;
@@ -338,6 +338,10 @@ mod tests {
             session_time_remain: None,
             session_laps_remain: None,
             player_incident_count: 0,
+            player_driver_incident_count: None,
+            player_team_incident_count: None,
+            player_car_class_position: 0,
+            car_idx_class_position: vec![],
             car_idx_lap_completed: vec![3, 3],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,

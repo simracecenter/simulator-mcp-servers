@@ -49,7 +49,7 @@ impl MicroSectorTracker {
         Some((bucket, current - best))
     }
 
-    pub fn on_lap_end(&mut self, lap: u8, session_time: f32, clean_lap: bool) -> Vec<RaceEvent> {
+    pub fn on_lap_end(&mut self, lap: u32, session_time: f32, clean_lap: bool) -> Vec<RaceEvent> {
         let mut events = Vec::new();
         if clean_lap && self.clean_laps_completed > 0 {
             let mut gain_start = None;
@@ -235,7 +235,7 @@ impl MicroSectorTracker {
 }
 
 fn gain_event(
-    lap: u8,
+    lap: u32,
     session_time: f32,
     start: u8,
     end: u8,
@@ -255,7 +255,7 @@ fn gain_event(
 }
 
 fn loss_event(
-    lap: u8,
+    lap: u32,
     session_time: f32,
     start: u8,
     end: u8,

@@ -7,8 +7,8 @@ const LAP_TIME_FALLBACK_S: f32 = 540.0;
 
 /// Tracks lap start times and completed-lap durations.
 pub struct LapTimer {
-    starts: HashMap<u8, f32>, // lap → first session_time seen
-    times: HashMap<u8, f32>,  // lap → duration in seconds
+    starts: HashMap<u32, f32>, // lap → first session_time seen
+    times: HashMap<u32, f32>,  // lap → duration in seconds
 }
 
 impl LapTimer {
@@ -21,7 +21,7 @@ impl LapTimer {
 
     /// Call once per frame. On the first time lap `n` is seen, the duration
     /// of lap `n-1` is finalised (if we have a start time for it).
-    pub fn update(&mut self, lap: u8, t: f32) {
+    pub fn update(&mut self, lap: u32, t: f32) {
         if let Entry::Vacant(slot) = self.starts.entry(lap) {
             slot.insert(t);
             if lap > 0 {
@@ -49,7 +49,7 @@ impl LapTimer {
     }
 
     /// Completed lap time for a specific lap number, if available.
-    pub fn completed(&self, lap: u8) -> Option<f32> {
+    pub fn completed(&self, lap: u32) -> Option<f32> {
         self.times.get(&lap).copied()
     }
 }

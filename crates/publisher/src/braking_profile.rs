@@ -15,7 +15,7 @@ struct BrakeSample {
 
 pub struct BrakeWindow {
     anchor_bucket: u8,
-    lap: u8,
+    lap: u32,
     samples: Vec<BrakeSample>,
 }
 
@@ -23,7 +23,7 @@ pub struct BrakingProfileDetector {
     pub in_window: Option<BrakeWindow>,
     emitted_this_lap: HashSet<u8>,
     heavy_braking_anchors: Vec<u8>,
-    current_lap: Option<u8>,
+    current_lap: Option<u32>,
 }
 
 impl BrakingProfileDetector {
@@ -159,6 +159,10 @@ mod tests {
             session_time_remain: None,
             session_laps_remain: None,
             player_incident_count: 0,
+            player_driver_incident_count: None,
+            player_team_incident_count: None,
+            player_car_class_position: 0,
+            car_idx_class_position: vec![],
             car_idx_lap_completed: vec![],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,

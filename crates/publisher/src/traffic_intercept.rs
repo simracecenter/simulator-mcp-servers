@@ -35,7 +35,7 @@ impl TrafficInterceptDetector {
         registry: &CarRegistry,
         n_anchors: usize,
         track_length_m: f32,
-        lap: u8,
+        lap: u32,
         session_time: f32,
     ) -> Vec<RaceEvent> {
         let cars: Vec<_> = registry

@@ -7,6 +7,7 @@
   - https://github.com/simracecenter/simulator-mcp-servers/issues/59
   - https://github.com/simracecenter/simulator-mcp-servers/issues/69
   - https://github.com/simracecenter/simulator-mcp-servers/issues/75
+  - https://github.com/simracecenter/simulator-mcp-servers/issues/103
 
 ## Context
 
@@ -111,6 +112,64 @@ Publisher role. Bindings are learned in the settings page's WHEEL BUTTONS sectio
 `%APPDATA%\SimRaceCenter\controls.toml`. Presses reach the in-process engine through `ControlRelay`
 and are dropped while the engine is stopped. Installer and autostart remain out of scope, and the
 default listener remains unchanged for simulator roles.
+
+## Run-story fields (2026-11-17 amendment)
+
+A review of a real multi-class run found three gaps at the source (issue #103).
+
+**Class position.** The publisher reads `PlayerCarClassPosition` and
+`CarIdxClassPosition` (both optional) and adds a class position to every event
+that already carried an overall one: `class_position` on `LAP_COMPLETED`,
+`PIT_ENTRY`, `PIT_EXIT` and `DRIVER_MATERIAL`; `class_position_from` /
+`class_position_to` on `OVERTAKE` and `OVERTAKE_FOR_LEAD`; `car_class_position`
+(the car `car_race_position` describes) plus `leaderClassPosition` /
+`followerClassPosition` on the three `BATTLE_*` events. A class key is
+**omitted**, never `null`, when the SDK has no value. Overall-position keys keep
+their names and meaning.
+
+**Lap counter.** `lap` is `u32` from the SDK read to the wire. It was `u8`,
+produced by a truncating cast, so lap 256 read as lap 0: the rig's own lap
+processing stopped for that lap, `LAP_COMPLETED` for lap 255 was replaced by
+one for lap 0, and later laps collided with per-lap state from the start of the
+race. On the wire `lap` is a JSON number as before.
+
+**`CAR_FINISHED`.** `RACE_CHECKERED` marks the flag falling for the overall
+leader; the rest of the field is still racing. `CAR_FINISHED` (car-scoped,
+subject role `DRIVER`) is emitted when the rig's own car takes the flag: its
+completed-lap counter advances while the flag is out, or it leads overall and
+crossed the line within one second of the flag falling. It carries `position`,
+`class_position`, `laps_completed`, `best_lap_time_s`, `last_lap_time_s`,
+`incident_count` (`PlayerCarMyIncidentCount`) and, when the SDK exposes them,
+`driver_incident_count` and `team_incident_count`. It is emitted at most once
+per `SessionNum`, in any kind of session that goes checkered (the envelope's
+`context.sessionType` says which), and never when the publisher connected with
+the flag already out or the car does not reach the line.
+
+### Payload contract versioning
+
+`PAYLOAD_CONTRACT_VERSION` stays at `3`. The rule, written down here because
+it was implicit until now:
+
+- The version moves when an existing key changes meaning or shape, or when a
+  consumer must be able to gate on a set of keys being present on every event
+  of a type (revisions 2 and 3 were both of that kind).
+- It does **not** move for optional keys that are omitted when there is no
+  value, or for a new event type. A version cannot promise a key that is
+  sometimes absent, and a new type is announced by
+  `contracts/publisher-event-catalog.json`, which exists for that purpose.
+
+A bump is also not free: Director's ingest schema accepts an enumerated set of
+contract versions, so a publisher that moved to `4` for an additive change
+would have every batch rejected by every Director already deployed.
+
+### Rollout order
+
+A consumer validates `type` against its own copy of the catalog. Director must
+take the regenerated catalog (and decide what to do with `CAR_FINISHED`)
+**before** a publisher carrying this change is released to a Rig: until then a
+Director rejects the batch that contains a `CAR_FINISHED`, and the publisher
+treats that 4xx as terminal and quarantines the batch (see "Durable ingest
+delivery" above), losing the events that shared it.
 
 ## References
 
