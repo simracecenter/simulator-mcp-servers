@@ -18,7 +18,7 @@ pub struct CarSlopeInfo {
 /// approach is correct and fast enough (~2 650 ops per lap at Nürburgring).
 pub struct RegressionStore {
     /// (bucket, car_idx) → [(lap, gap_s)]
-    data: HashMap<(u8, u8), Vec<(u8, f32)>>,
+    data: HashMap<(u8, u8), Vec<(u32, f32)>>,
 }
 
 impl RegressionStore {
@@ -31,7 +31,7 @@ impl RegressionStore {
     /// Rebuild from sampler. `max_lap` prevents the first frame of the new lap
     /// contaminating the previous lap's regression (off-by-one correctness
     /// invariant — do not remove this guard).
-    pub fn ingest(&mut self, sampler: &AnchorSampler, max_lap: u8) {
+    pub fn ingest(&mut self, sampler: &AnchorSampler, max_lap: u32) {
         self.data.clear();
         for r in &sampler.samples {
             if r.lap <= max_lap && r.is_clean {

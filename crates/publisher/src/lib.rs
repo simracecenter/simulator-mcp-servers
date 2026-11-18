@@ -7,6 +7,7 @@ pub mod basic_incident;
 pub mod battle_pairs;
 pub mod battle_state;
 pub mod braking_profile;
+pub mod car_finish;
 pub mod car_registry;
 pub mod compression_zone;
 pub mod config;

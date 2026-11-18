@@ -125,7 +125,7 @@ impl BasicIncidentDetector {
     pub fn update(
         &mut self,
         registry: &CarRegistry,
-        lap: u8,
+        lap: u32,
         session_time: f32,
         session_tick: i64,
         player_car_idx: u8,

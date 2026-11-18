@@ -16,7 +16,7 @@ impl CompressionZoneDetector {
         registry: &CarRegistry,
         n_anchors: usize,
         track_length_m: f32,
-        lap: u8,
+        lap: u32,
         session_time: f32,
     ) -> Vec<RaceEvent> {
         if registry.class_count() <= 1 {

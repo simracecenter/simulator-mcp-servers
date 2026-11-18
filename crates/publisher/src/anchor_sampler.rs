@@ -5,7 +5,7 @@ use std::collections::HashSet;
 /// A single gap reading captured at a spatial anchor crossing.
 #[derive(Debug, Clone)]
 pub struct AnchorReading {
-    pub lap: u8,
+    pub lap: u32,
     pub bucket: u8,
     pub gap_s: f32,
     pub car_idx: u8,
@@ -18,7 +18,7 @@ pub struct AnchorReading {
 /// `lap_dist_pct` (physical track position), not elapsed time.
 pub struct AnchorSampler {
     n_buckets: usize,
-    seen: HashSet<(u8, u8, u8)>, // (lap, bucket, car_idx)
+    seen: HashSet<(u32, u8, u8)>, // (lap, bucket, car_idx)
     pub samples: Vec<AnchorReading>,
 }
 
@@ -40,7 +40,7 @@ impl AnchorSampler {
     ///
     /// `ldp` is `lap_dist_pct` (0.0–1.0). The bucket key is derived from
     /// physical track position so gaps are comparable across laps.
-    pub fn update(&mut self, lap: u8, ldp: f32, gap_s: f32, car_idx: u8, is_clean: bool) -> bool {
+    pub fn update(&mut self, lap: u32, ldp: f32, gap_s: f32, car_idx: u8, is_clean: bool) -> bool {
         let bucket = ((ldp * self.n_buckets as f32) as usize % self.n_buckets) as u8;
         let key = (lap, bucket, car_idx);
         if self.seen.contains(&key) {

@@ -23,7 +23,7 @@ impl HorizonDetector {
         &mut self,
         registry: &CarRegistry,
         regression_per_car: &HashMap<u8, CarSlopeInfo>,
-        lap: u8,
+        lap: u32,
         session_time: f32,
         lap_time_s: f32,
     ) -> Vec<RaceEvent> {

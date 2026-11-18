@@ -44,7 +44,7 @@ impl LifecyclePublisher {
     }
 
     /// Emit `PUBLISHER_HELLO` — call once after successful registration.
-    pub fn on_activate(&mut self, lap: u8, session_time: f32) -> RaceEvent {
+    pub fn on_activate(&mut self, lap: u32, session_time: f32) -> RaceEvent {
         self.fresh = false;
         RaceEvent::PublisherHello {
             lap,
@@ -55,7 +55,7 @@ impl LifecyclePublisher {
     }
 
     /// Emit `PUBLISHER_GOODBYE` — call on clean shutdown.
-    pub fn on_deactivate(&self, lap: u8, session_time: f32) -> RaceEvent {
+    pub fn on_deactivate(&self, lap: u32, session_time: f32) -> RaceEvent {
         RaceEvent::PublisherGoodbye {
             lap,
             session_time,
@@ -70,7 +70,7 @@ impl LifecyclePublisher {
     /// the one transition signal it needs; the departed id rides in the payload.
     pub fn on_session_transition(
         &self,
-        lap: u8,
+        lap: u32,
         session_time: f32,
         previous_sub_session_id: i64,
     ) -> RaceEvent {
@@ -83,7 +83,7 @@ impl LifecyclePublisher {
     }
 
     /// Emit `PUBLISHER_HEARTBEAT` — call on the heartbeat timer while connected.
-    pub fn heartbeat(&self, lap: u8, session_time: f32, events_enqueued_total: u64) -> RaceEvent {
+    pub fn heartbeat(&self, lap: u32, session_time: f32, events_enqueued_total: u64) -> RaceEvent {
         RaceEvent::PublisherHeartbeat {
             lap,
             session_time,

@@ -4,7 +4,10 @@
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct TelemetryFrame {
-    pub lap: u8,
+    /// iRacing `Lap` — the lap the rig's car is on. `u32` so a long race
+    /// cannot wrap: the SDK value is a 32-bit int and an endurance race runs
+    /// well past 255 laps.
+    pub lap: u32,
     pub session_time: f32,
     pub lap_dist_pct: f32,
     pub player_car_idx: u8,
@@ -59,6 +62,23 @@ pub struct TelemetryFrame {
     /// Absent from some fixtures/mocks; defaults to 0.
     #[serde(default)]
     pub player_incident_count: i32,
+    /// Incident count of the driver currently in the rig's car
+    /// (`PlayerCarDriverIncidentCount`). `None` when the SDK does not expose it.
+    #[serde(default)]
+    pub player_driver_incident_count: Option<i32>,
+    /// Incident count of the rig's whole team (`PlayerCarTeamIncidentCount`).
+    /// `None` when the SDK does not expose it.
+    #[serde(default)]
+    pub player_team_incident_count: Option<i32>,
+    /// Position of the rig's car within its class (`PlayerCarClassPosition`),
+    /// 1-based. 0 = unclassified or the variable is absent.
+    #[serde(default)]
+    pub player_car_class_position: u8,
+    /// Position within class per car (`CarIdxClassPosition`), indexed by
+    /// car_idx, 1-based. 0 = unclassified. Empty when the SDK does not expose
+    /// the variable (and in JSONL fixtures).
+    #[serde(default)]
+    pub car_idx_class_position: Vec<u8>,
     /// Laps completed per car, indexed by car_idx.
     /// Used to provide `leaderLap` context in `PublisherEventContext`.
     /// Absent from JSONL fixtures; defaults to empty vec.
@@ -80,4 +100,23 @@ pub struct TelemetryFrame {
     pub brake: f32,
     #[serde(default)]
     pub speed: f32,
+}
+
+impl TelemetryFrame {
+    /// Position of `car_idx` within its class, or `None` when the SDK does not
+    /// provide one (variable absent, slot out of range, or car unclassified).
+    pub fn class_position_of(&self, car_idx: u8) -> Option<u8> {
+        self.car_idx_class_position
+            .get(car_idx as usize)
+            .copied()
+            .filter(|p| *p > 0)
+    }
+
+    /// Class position of the rig's own car: `PlayerCarClassPosition`, falling
+    /// back to the rig's slot in `CarIdxClassPosition`.
+    pub fn player_class_position(&self) -> Option<u8> {
+        Some(self.player_car_class_position)
+            .filter(|p| *p > 0)
+            .or_else(|| self.class_position_of(self.player_car_idx))
+    }
 }

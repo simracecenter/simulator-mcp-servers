@@ -32,6 +32,10 @@ fn minimal_frame() -> TelemetryFrame {
         session_time_remain: None,
         session_laps_remain: None,
         player_incident_count: 0,
+        player_driver_incident_count: None,
+        player_team_incident_count: None,
+        player_car_class_position: 0,
+        car_idx_class_position: vec![],
         car_idx_lap_completed: vec![3, 3],
         lf_temp_m: 0.0,
         rf_temp_m: 0.0,
@@ -121,6 +125,7 @@ fn lap_completed_contract_includes_aliases_and_snake_case_fields() {
         lap_time_s: Some(88.2),
         best_lap_time_s: Some(87.9),
         position: 5,
+        class_position: None,
         pit_frames: 0,
     };
 
@@ -156,6 +161,7 @@ fn battle_contract_includes_leader_and_follower_numbers() {
         opponent_car_idx: 1,
         gap_s: 0.4,
         car_race_position: 4,
+        car_class_position: None,
         prior_skirmishes: 0,
         prior_attack_time_s: 0.0,
         engagement_started_at_session_time_s: 12.0,
@@ -197,6 +203,7 @@ fn battle_closing_contract_uses_opponent_car_as_primary_identity() {
         player_car_idx: 0,
         opponent_car_idx: 1,
         car_race_position: 3,
+        car_class_position: None,
         closing_rate_sec_per_lap: 0.43,
         slope_info: SlopeInfo {
             median_slope: -0.43,
@@ -239,6 +246,8 @@ fn overtake_includes_overtaking_and_overtaken_cars() {
         position_from: 4,
         position_to: 3,
         positions_gained: 1,
+        class_position_from: None,
+        class_position_to: None,
     };
 
     let env = build_event(
@@ -280,6 +289,8 @@ fn overtake_can_emit_without_overtaken_car_when_uncertain() {
         position_from: 4,
         position_to: 3,
         positions_gained: 1,
+        class_position_from: None,
+        class_position_to: None,
     };
 
     let env = build_event(
@@ -318,6 +329,8 @@ fn overtake_for_lead_includes_both_cars() {
         overtaken_car_idx: Some(1),
         position_from: 2,
         positions_gained: 1,
+        class_position_from: None,
+        class_position_to: None,
     };
 
     let env = build_event(
@@ -350,6 +363,7 @@ fn battle_events_identify_both_sides_directly() {
         opponent_car_idx: 3,
         gap_s: 0.35,
         car_race_position: 5,
+        car_class_position: None,
         prior_skirmishes: 1,
         prior_attack_time_s: 12.5,
         engagement_started_at_session_time_s: 50.0,
@@ -394,6 +408,7 @@ fn battle_engaged_includes_engagement_start_time() {
         opponent_car_idx: 1,
         gap_s: 0.45,
         car_race_position: 4,
+        car_class_position: None,
         prior_skirmishes: 0,
         prior_attack_time_s: 0.0,
         engagement_started_at_session_time_s: 200.0,
@@ -444,6 +459,7 @@ fn battle_broken_contract_uses_final_gap_sec_and_duration() {
         opponent_car_idx: 1,
         final_gap_sec: Some(1.8),
         car_race_position: 4,
+        car_class_position: None,
         engagement_started_at_session_time_s: 320.0,
         battle: None,
     };
@@ -1041,6 +1057,7 @@ fn battle_broken_with_no_gap_emits_null_final_gap() {
         opponent_car_idx: 2,
         final_gap_sec: None, // gap unknown — opponent left scan range
         car_race_position: 3,
+        car_class_position: None,
         engagement_started_at_session_time_s: 390.0,
         battle: None,
     };
@@ -1441,6 +1458,7 @@ fn driver_material_publishes_the_full_state_of_the_rigs_own_driver() {
         session_time: 1234.5,
         player_car_idx: 0,
         position: 5,
+        class_position: None,
         laps_completed: 3,
         lap_dist_pct: 0.5,
         last_lap_time_s: Some(88.2),
@@ -1609,6 +1627,7 @@ fn pit_exit_publishes_an_unclassified_car_without_dropping_identity() {
         session_time: 40.0,
         player_car_idx: 0,
         position: 0,
+        class_position: None,
     };
 
     let env = build_event(
@@ -1711,6 +1730,7 @@ fn battle_engaged_for_a_third_party_pair_carries_identity_and_roles() {
         opponent_car_idx: 3,
         gap_s: 0.5,
         car_race_position: 2,
+        car_class_position: None,
         prior_skirmishes: 0,
         prior_attack_time_s: 0.0,
         engagement_started_at_session_time_s: 1200.0,
@@ -1752,6 +1772,7 @@ fn battle_closing_and_broken_share_the_battle_id() {
         player_car_idx: 5,
         opponent_car_idx: 3,
         car_race_position: 2,
+        car_class_position: None,
         closing_rate_sec_per_lap: 1.25,
         slope_info: SlopeInfo {
             median_slope: -1.25,
@@ -1770,6 +1791,7 @@ fn battle_closing_and_broken_share_the_battle_id() {
         opponent_car_idx: 3,
         final_gap_sec: Some(2.6),
         car_race_position: 2,
+        car_class_position: None,
         engagement_started_at_session_time_s: 1200.0,
         battle: Some(BattleIdentity {
             battle_break_reason: Some(BattleBreakReason::GapOpened),
@@ -1818,6 +1840,7 @@ fn battle_events_without_identity_omit_the_new_fields() {
         opponent_car_idx: 1,
         gap_s: 0.4,
         car_race_position: 4,
+        car_class_position: None,
         prior_skirmishes: 0,
         prior_attack_time_s: 0.0,
         engagement_started_at_session_time_s: 12.0,
@@ -2034,4 +2057,258 @@ fn rfc3339_formatting_matches_known_instants() {
         format_rfc3339_ms(1_788_391_719_745),
         "2026-09-02T23:28:39.745Z"
     );
+}
+
+// ── Class position, wide lap counter, CAR_FINISHED ───────────────────────────
+
+fn build(event: &RaceEvent, frame: &TelemetryFrame) -> Value {
+    normalized_event_json(&build_event(
+        event,
+        frame,
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        Some(77),
+    ))
+}
+
+/// A class key is written in both spellings or not at all — never `null`.
+fn assert_class_key(payload: &Value, snake: &str, camel: &str, expected: Option<u64>) {
+    match expected {
+        Some(position) => {
+            assert_eq!(payload[snake], position, "{snake}");
+            assert_eq!(payload[camel], position, "{camel}");
+        }
+        None => {
+            assert!(payload.get(snake).is_none(), "{snake} should be omitted");
+            assert!(payload.get(camel).is_none(), "{camel} should be omitted");
+        }
+    }
+}
+
+#[test]
+fn lap_completed_carries_class_position_only_when_the_sdk_provides_it() {
+    let lap_completed = |class_position| RaceEvent::LapCompleted {
+        lap: 2,
+        session_time: 99.0,
+        player_car_idx: 0,
+        lap_time_s: Some(88.2),
+        best_lap_time_s: Some(87.9),
+        position: 5,
+        class_position,
+        pit_frames: 0,
+    };
+
+    let with = build(&lap_completed(Some(2)), &minimal_frame());
+    assert_envelope_contract(&with, "LAP_COMPLETED");
+    assert_eq!(with["payload"]["position"], 5);
+    assert_class_key(&with["payload"], "class_position", "classPosition", Some(2));
+
+    let without = build(&lap_completed(None), &minimal_frame());
+    assert_envelope_contract(&without, "LAP_COMPLETED");
+    assert_eq!(without["payload"]["position"], 5);
+    assert_class_key(&without["payload"], "class_position", "classPosition", None);
+}
+
+#[test]
+fn pit_and_driver_material_events_carry_class_position() {
+    let pit_entry = RaceEvent::PitEntry {
+        lap: 9,
+        session_time: 700.0,
+        player_car_idx: 0,
+        position: 12,
+        class_position: Some(4),
+    };
+    let json = build(&pit_entry, &minimal_frame());
+    assert_envelope_contract(&json, "PIT_ENTRY");
+    assert_class_key(&json["payload"], "class_position", "classPosition", Some(4));
+
+    let pit_exit = RaceEvent::PitExit {
+        lap: 9,
+        session_time: 740.0,
+        player_car_idx: 0,
+        position: 14,
+        class_position: None,
+    };
+    let json = build(&pit_exit, &minimal_frame());
+    assert_envelope_contract(&json, "PIT_EXIT");
+    assert_eq!(json["payload"]["position"], 14);
+    assert_class_key(&json["payload"], "class_position", "classPosition", None);
+}
+
+#[test]
+fn overtake_carries_class_positions_before_and_after() {
+    let event = RaceEvent::Overtake {
+        lap: 6,
+        session_time: 500.0,
+        car_idx: 0,
+        overtaken_car_idx: Some(1),
+        position_from: 9,
+        position_to: 8,
+        positions_gained: 1,
+        class_position_from: Some(3),
+        class_position_to: Some(2),
+    };
+    let json = build(&event, &minimal_frame());
+    assert_envelope_contract(&json, "OVERTAKE");
+    let payload = &json["payload"];
+    // Existing keys keep their meaning: overall positions.
+    assert_eq!(payload["position_from"], 9);
+    assert_eq!(payload["position_to"], 8);
+    assert_eq!(payload["positionsGained"], 1);
+    assert_class_key(payload, "class_position_from", "classPositionFrom", Some(3));
+    assert_class_key(payload, "class_position_to", "classPositionTo", Some(2));
+}
+
+#[test]
+fn battle_events_carry_class_positions_for_both_sides() {
+    let mut frame = minimal_frame();
+    // Rig (car 0) is P5 overall / P3 in class, chasing car 1: P4 / P2.
+    frame.car_idx_class_position = vec![3, 2];
+    let event = RaceEvent::BattleEngaged {
+        lap: 2,
+        session_time: 12.0,
+        player_car_idx: 0,
+        opponent_car_idx: 1,
+        gap_s: 0.7,
+        car_race_position: 4,
+        car_class_position: Some(2),
+        prior_skirmishes: 0,
+        prior_attack_time_s: 0.0,
+        engagement_started_at_session_time_s: 12.0,
+        battle: None,
+    };
+    let json = build(&event, &frame);
+    assert_envelope_contract(&json, "BATTLE_ENGAGED");
+    let payload = &json["payload"];
+    assert_eq!(payload["car_race_position"], 4);
+    assert_class_key(payload, "car_class_position", "carClassPosition", Some(2));
+    assert_eq!(payload["leaderRacePosition"], 4);
+    assert_eq!(payload["leaderClassPosition"], 2);
+    assert_eq!(payload["followerRacePosition"], 5);
+    assert_eq!(payload["followerClassPosition"], 3);
+
+    // Without SDK class data none of the class keys are written.
+    let event = RaceEvent::BattleEngaged {
+        lap: 2,
+        session_time: 12.0,
+        player_car_idx: 0,
+        opponent_car_idx: 1,
+        gap_s: 0.7,
+        car_race_position: 4,
+        car_class_position: None,
+        prior_skirmishes: 0,
+        prior_attack_time_s: 0.0,
+        engagement_started_at_session_time_s: 12.0,
+        battle: None,
+    };
+    let json = build(&event, &minimal_frame());
+    let payload = &json["payload"];
+    assert_class_key(payload, "car_class_position", "carClassPosition", None);
+    assert!(payload.get("leaderClassPosition").is_none());
+    assert!(payload.get("followerClassPosition").is_none());
+    assert_eq!(payload["leaderRacePosition"], 4);
+}
+
+#[test]
+fn lap_numbers_past_255_reach_the_wire_intact() {
+    let mut frame = minimal_frame();
+    frame.lap = 1_001;
+    let event = RaceEvent::LapCompleted {
+        lap: 1_000,
+        session_time: 86_000.0,
+        player_car_idx: 0,
+        lap_time_s: Some(88.2),
+        best_lap_time_s: Some(87.9),
+        position: 5,
+        class_position: None,
+        pit_frames: 0,
+    };
+    let json = build(&event, &frame);
+    assert_envelope_contract(&json, "LAP_COMPLETED");
+    assert_eq!(json["payload"]["lap"], 1_000);
+}
+
+#[test]
+fn car_finished_publishes_the_rigs_result_as_a_car_scoped_driver_event() {
+    let mut frame = minimal_frame();
+    frame.lap = 301;
+    frame.session_state = 5;
+    frame.session_num = 2;
+    let event = RaceEvent::CarFinished {
+        lap: 301,
+        session_time: 86_400.5,
+        player_car_idx: 0,
+        position: 14,
+        class_position: Some(3),
+        laps_completed: 300,
+        best_lap_time_s: Some(118.4),
+        last_lap_time_s: Some(119.9),
+        incident_count: 6,
+        driver_incident_count: Some(6),
+        team_incident_count: Some(17),
+    };
+    let json = build(&event, &frame);
+
+    assert_envelope_contract(&json, "CAR_FINISHED");
+    assert_eq!(json["scope"], "CAR_SCOPED");
+    // Session identity rides on the envelope, as on every event.
+    assert_eq!(json["raceSessionId"], "session-abc");
+    assert_eq!(json["context"]["subSessionId"], 77);
+    assert_eq!(json["context"]["sessionNum"], 2);
+    assert_eq!(json["context"]["sessionState"], 5);
+    assert_eq!(json["car"]["carIdx"], 0);
+    assert_eq!(json["subject"]["carIdx"], 0);
+
+    let payload = &json["payload"];
+    assert_eq!(payload["subjectRole"], "DRIVER");
+    assert_eq!(payload["eventScope"], "CAR_SCOPED");
+    assert_eq!(payload["lap"], 301);
+    assert_eq!(payload["playerCarIdx"], 0);
+    assert_eq!(payload["position"], 14);
+    assert_class_key(payload, "class_position", "classPosition", Some(3));
+    assert_eq!(payload["lapsCompleted"], 300);
+    assert_eq!(payload["laps_completed"], 300);
+    assert!((payload["bestLapTime"].as_f64().unwrap() - 118.4).abs() < 1e-3);
+    assert!((payload["lastLapTime"].as_f64().unwrap() - 119.9).abs() < 1e-3);
+    assert!((payload["best_lap_time_s"].as_f64().unwrap() - 118.4).abs() < 1e-3);
+    assert!((payload["last_lap_time_s"].as_f64().unwrap() - 119.9).abs() < 1e-3);
+    assert_eq!(payload["incidentCount"], 6);
+    assert_eq!(payload["driverIncidentCount"], 6);
+    assert_eq!(payload["teamIncidentCount"], 17);
+}
+
+#[test]
+fn car_finished_omits_what_the_sdk_did_not_provide() {
+    let event = RaceEvent::CarFinished {
+        lap: 21,
+        session_time: 1_891.0,
+        player_car_idx: 0,
+        position: 8,
+        class_position: None,
+        laps_completed: 20,
+        best_lap_time_s: None,
+        last_lap_time_s: None,
+        incident_count: 0,
+        driver_incident_count: None,
+        team_incident_count: None,
+    };
+    let json = build(&event, &minimal_frame());
+    assert_envelope_contract(&json, "CAR_FINISHED");
+    let payload = &json["payload"];
+    assert_eq!(payload["position"], 8);
+    assert_eq!(payload["lapsCompleted"], 20);
+    assert_eq!(payload["incidentCount"], 0);
+    assert_class_key(payload, "class_position", "classPosition", None);
+    assert_class_key(
+        payload,
+        "driver_incident_count",
+        "driverIncidentCount",
+        None,
+    );
+    assert_class_key(payload, "team_incident_count", "teamIncidentCount", None);
+    // Lap times follow LAP_COMPLETED: the key is present and null.
+    assert!(payload["bestLapTime"].is_null());
+    assert!(payload["lastLapTime"].is_null());
 }

@@ -1019,6 +1019,22 @@ fn log_event(
                 .unwrap_or_else(|| "?".to_string());
             log_info!("[publisher] OVERTAKE_FOR_LEAD — #{player} passed #{overtaken}");
         }
+        RaceEvent::CarFinished {
+            player_car_idx,
+            position,
+            class_position,
+            laps_completed,
+            ..
+        } => {
+            let player = car_num(roster, *player_car_idx);
+            let in_class = class_position
+                .map(|p| format!(" (P{p} in class)"))
+                .unwrap_or_default();
+            log_info!(
+                "[publisher] CAR_FINISHED — #{player} took the flag P{position}{in_class}, \
+                 {laps_completed} laps"
+            );
+        }
         _ => {}
     }
 }
@@ -1050,6 +1066,10 @@ mod tests {
             session_time_remain: None,
             session_laps_remain: None,
             player_incident_count: 0,
+            player_driver_incident_count: None,
+            player_team_incident_count: None,
+            player_car_class_position: 0,
+            car_idx_class_position: vec![],
             car_idx_lap_completed: vec![3, 3],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,

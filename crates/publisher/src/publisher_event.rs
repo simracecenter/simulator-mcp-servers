@@ -29,6 +29,15 @@ use crate::telemetry_frame::TelemetryFrame;
 ///   payload keys, unique `eventKey`/`sequence`, normalised incident severity.
 /// * `3` — stable incident lifecycle keys, participant state, and resolution
 ///   timing for incident clusters.
+///
+/// The number moves only when an existing key changes meaning or shape, or
+/// when a consumer must be able to gate on a set of keys being present on
+/// every event of a type. Optional keys that are omitted when the SDK has no
+/// value (class positions) and new event types do not move it: an optional
+/// key cannot be gated on by version, a new type is announced through
+/// `contracts/publisher-event-catalog.json`, and deployed consumers accept an
+/// enumerated set of versions, so a bump for an additive change would make
+/// them reject every batch. See ADR 0008, "Payload contract versioning".
 pub const PAYLOAD_CONTRACT_VERSION: u32 = 3;
 
 /// Monotonic counter over every event this process builds. Ticks repeat and
@@ -302,7 +311,8 @@ fn primary_car_idx(event: &RaceEvent, player_car_idx: u8) -> u8 {
         } => *opponent_car_idx,
         RaceEvent::IncidentAlert { car_idx, .. } => *car_idx,
         RaceEvent::FocusMeRequested { player_car_idx, .. }
-        | RaceEvent::DriverApprovalAnswered { player_car_idx, .. } => *player_car_idx,
+        | RaceEvent::DriverApprovalAnswered { player_car_idx, .. }
+        | RaceEvent::CarFinished { player_car_idx, .. } => *player_car_idx,
         _ => player_car_idx,
     }
 }
@@ -533,7 +543,8 @@ fn event_roles(event: &RaceEvent, frame: &TelemetryFrame) -> EventRoles {
         | RaceEvent::BroadcastControlRequested { .. } => EventRoles::solo(me, SubjectRole::Rig),
         RaceEvent::FocusMeRequested { player_car_idx, .. }
         | RaceEvent::DriverApprovalAnswered { player_car_idx, .. }
-        | RaceEvent::DriverMaterial { player_car_idx, .. } => {
+        | RaceEvent::DriverMaterial { player_car_idx, .. }
+        | RaceEvent::CarFinished { player_car_idx, .. } => {
             EventRoles::solo(*player_car_idx, SubjectRole::Driver)
         }
         // Everything else describes the rig's own driving: laps, pit, tires,
@@ -750,6 +761,8 @@ fn enrich_payload(
                 "opponentRacePosition".to_owned(),
                 option_u8_json(car_race_position(frame, *opponent_car_idx)),
             );
+            insert_class_position(obj, "leaderClassPosition", frame, leader_idx);
+            insert_class_position(obj, "followerClassPosition", frame, follower_idx);
 
             // Gap at engagement (sanitized) and engagement start time (camelCase aliases)
             obj.insert(
@@ -810,6 +823,8 @@ fn enrich_payload(
                 "opponentRacePosition".to_owned(),
                 option_u8_json(car_race_position(frame, *opponent_car_idx)),
             );
+            insert_class_position(obj, "leaderClassPosition", frame, leader_idx);
+            insert_class_position(obj, "followerClassPosition", frame, follower_idx);
 
             // Final gap (None when the gap was a sentinel / car no longer visible)
             obj.insert("finalGapSec".to_owned(), option_f32_json(*final_gap_sec));
@@ -862,6 +877,8 @@ fn enrich_payload(
                 "opponentRacePosition".to_owned(),
                 option_u8_json(car_race_position(frame, *opponent_car_idx)),
             );
+            insert_class_position(obj, "leaderClassPosition", frame, leader_idx);
+            insert_class_position(obj, "followerClassPosition", frame, follower_idx);
         }
         RaceEvent::DriverMaterial {
             last_lap_time_s,
@@ -893,6 +910,15 @@ fn enrich_payload(
             };
             obj.insert("carAhead".to_owned(), neighbour(car_ahead_idx));
             obj.insert("carBehind".to_owned(), neighbour(car_behind_idx));
+        }
+        RaceEvent::CarFinished {
+            best_lap_time_s,
+            last_lap_time_s,
+            ..
+        } => {
+            // Same aliases as `LAP_COMPLETED` / `DRIVER_MATERIAL`.
+            obj.insert("lastLapTime".to_owned(), option_f32_json(*last_lap_time_s));
+            obj.insert("bestLapTime".to_owned(), option_f32_json(*best_lap_time_s));
         }
         RaceEvent::VulnerabilityAlert {
             attacker_idx,
@@ -1210,6 +1236,19 @@ fn leader_follower_indices(frame: &TelemetryFrame, player_idx: u8, opponent_idx:
     }
 }
 
+/// Write a car's class position under `key`, or nothing at all when the SDK
+/// does not provide one — class keys are omitted, never `null`.
+fn insert_class_position(
+    obj: &mut serde_json::Map<String, Value>,
+    key: &str,
+    frame: &TelemetryFrame,
+    car_idx: u8,
+) {
+    if let Some(position) = frame.class_position_of(car_idx) {
+        obj.insert(key.to_owned(), json!(position));
+    }
+}
+
 fn car_race_position(frame: &TelemetryFrame, car_idx: u8) -> Option<u8> {
     frame
         .car_idx_position
@@ -1249,6 +1288,10 @@ mod tests {
             session_time_remain: None,
             session_laps_remain: None,
             player_incident_count: 0,
+            player_driver_incident_count: None,
+            player_team_incident_count: None,
+            player_car_class_position: 0,
+            car_idx_class_position: vec![],
             car_idx_lap_completed: vec![3, 3],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,
@@ -1298,6 +1341,7 @@ mod tests {
             player_car_idx: 0,
             opponent_car_idx: 1,
             car_race_position: 3,
+            car_class_position: None,
             closing_rate_sec_per_lap: 0.43,
             slope_info: SlopeInfo {
                 median_slope: -0.43,
@@ -1412,6 +1456,7 @@ mod tests {
             opponent_car_idx: 1,
             gap_s: 0.4,
             car_race_position: 4,
+            car_class_position: None,
             prior_skirmishes: 0,
             prior_attack_time_s: 0.0,
             engagement_started_at_session_time_s: 12.0,
@@ -1436,6 +1481,7 @@ mod tests {
             player_car_idx: 0,
             opponent_car_idx: 1,
             car_race_position: 3,
+            car_class_position: None,
             closing_rate_sec_per_lap: 0.43,
             slope_info: SlopeInfo {
                 median_slope: -0.43,
@@ -1454,6 +1500,7 @@ mod tests {
             opponent_car_idx: 1,
             final_gap_sec: Some(2.1),
             car_race_position: 3,
+            car_class_position: None,
             engagement_started_at_session_time_s: 1234.5,
             battle: None,
         };
@@ -1477,6 +1524,7 @@ mod tests {
             opponent_car_idx: 9, // out of range of car_idx_position
             gap_s: 0.4,
             car_race_position: 4,
+            car_class_position: None,
             prior_skirmishes: 0,
             prior_attack_time_s: 0.0,
             engagement_started_at_session_time_s: 12.0,
@@ -1537,6 +1585,7 @@ mod tests {
             lap_time_s: Some(88.2),
             best_lap_time_s: Some(87.9),
             position: 5,
+            class_position: None,
             pit_frames: 0,
         };
 
@@ -1564,6 +1613,8 @@ mod tests {
             position_from: 6,
             position_to: 5,
             positions_gained: 1,
+            class_position_from: None,
+            class_position_to: None,
         };
         let frame = minimal_frame();
         let roster = enriched_roster();

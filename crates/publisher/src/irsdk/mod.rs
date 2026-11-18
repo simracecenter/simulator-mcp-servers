@@ -140,6 +140,10 @@ mod platform {
                 "SessionNum",
                 "CarIdxTrackSurface",
                 "CarIdxLapCompleted",
+                "PlayerCarClassPosition",
+                "CarIdxClassPosition",
+                "PlayerCarDriverIncidentCount",
+                "PlayerCarTeamIncidentCount",
             ];
             let missing = REQUIRED_VARS
                 .iter()
