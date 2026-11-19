@@ -30,12 +30,12 @@ const MIN_SURFACE_SEVERITY: f32 = 0.1;
 /// count as an incident. Filters garage/pit-stall jitter.
 const MIN_PREV_SPEED_MPS: f32 = 5.0;
 /// iRacing `irsdk_TrkLoc`: cars not in world (garage, tow) report -1.
-const TRACK_SURFACE_NOT_IN_WORLD: i32 = -1;
+pub(crate) const TRACK_SURFACE_NOT_IN_WORLD: i32 = -1;
 /// iRacing `irsdk_TrkLoc`: 0 means off track.
-const TRACK_SURFACE_OFF_TRACK: i32 = 0;
+pub(crate) const TRACK_SURFACE_OFF_TRACK: i32 = 0;
 /// A car slower than this counts as stationary: incident points gained while
 /// crawling (pit stall, grid, tow) describe no on-track moment.
-const STATIONARY_SPEED_MPS: f32 = 5.0;
+pub(crate) const STATIONARY_SPEED_MPS: f32 = 5.0;
 /// Incident points at which an `incident_count_increase` alert is treated as
 /// maximally severe. iRacing awards 0x/1x/2x/4x per infraction.
 const MAX_INCIDENT_POINTS: f32 = 4.0;
@@ -58,6 +58,10 @@ pub struct HardEvent {
     pub session_tick: i64,
     pub lap_dist_pct: f32,
     pub reason: String,
+    /// The alert's own `speed_drop_mps`.
+    pub speed_drop_mps: f32,
+    /// The alert's own `severity_normalized`, 0.0–1.0.
+    pub severity_normalized: f32,
 }
 
 pub struct BasicIncidentDetector {
@@ -94,32 +98,8 @@ impl BasicIncidentDetector {
     }
 
     #[cfg(test)]
-    pub(crate) fn push_hard_event_for_test(
-        &mut self,
-        car_idx: u8,
-        session_time: f32,
-        session_tick: i64,
-        lap_dist_pct: f32,
-        reason: &str,
-    ) {
-        self.push_hard_event(car_idx, session_time, session_tick, lap_dist_pct, reason);
-    }
-
-    fn push_hard_event(
-        &mut self,
-        car_idx: u8,
-        session_time: f32,
-        session_tick: i64,
-        lap_dist_pct: f32,
-        reason: &str,
-    ) {
-        self.recent_hard_events.push_back(HardEvent {
-            car_idx,
-            session_time,
-            session_tick,
-            lap_dist_pct,
-            reason: reason.to_owned(),
-        });
+    pub(crate) fn push_hard_event_for_test(&mut self, event: HardEvent) {
+        self.recent_hard_events.push_back(event);
     }
 
     pub fn update(
@@ -239,6 +219,7 @@ impl BasicIncidentDetector {
                         "surface_drop"
                     }
                     .to_owned();
+                    let severity_normalized = severity.clamp(0.0, 1.0);
 
                     events.push(RaceEvent::IncidentAlert {
                         lap,
@@ -252,17 +233,19 @@ impl BasicIncidentDetector {
                         current_speed_mps: cur,
                         speed_drop_mps,
                         severity,
-                        severity_normalized: severity.clamp(0.0, 1.0),
+                        severity_normalized,
                         incident_count_delta: None,
                         reason: reason.clone(),
                     });
-                    self.push_hard_event(
-                        car.car_idx,
+                    self.recent_hard_events.push_back(HardEvent {
+                        car_idx: car.car_idx,
                         session_time,
                         session_tick,
-                        car.lap_dist_pct,
-                        &reason,
-                    );
+                        lap_dist_pct: car.lap_dist_pct,
+                        reason,
+                        speed_drop_mps,
+                        severity_normalized,
+                    });
                     if car.car_idx == player_car_idx {
                         player_alert_emitted = true;
                     }
@@ -295,13 +278,16 @@ impl BasicIncidentDetector {
                     || car.speed_ema_mps >= STATIONARY_SPEED_MPS;
 
                 if in_world && !in_pits && was_moving {
-                    self.push_hard_event(
-                        player_car_idx,
+                    let severity_normalized = (points / MAX_INCIDENT_POINTS).clamp(0.0, 1.0);
+                    self.recent_hard_events.push_back(HardEvent {
+                        car_idx: player_car_idx,
                         session_time,
                         session_tick,
-                        car.lap_dist_pct,
-                        "incident_count_increase",
-                    );
+                        lap_dist_pct: car.lap_dist_pct,
+                        reason: "incident_count_increase".to_owned(),
+                        speed_drop_mps,
+                        severity_normalized,
+                    });
                     events.push(RaceEvent::IncidentAlert {
                         lap,
                         session_time,
@@ -313,7 +299,7 @@ impl BasicIncidentDetector {
                         current_speed_mps: car.speed_ema_mps,
                         speed_drop_mps,
                         severity: points,
-                        severity_normalized: (points / MAX_INCIDENT_POINTS).clamp(0.0, 1.0),
+                        severity_normalized,
                         incident_count_delta: Some(player_incident_count - previous_count),
                         reason: "incident_count_increase".to_owned(),
                     });
@@ -531,6 +517,11 @@ mod tests {
         assert_eq!(*severity, 2.0);
         assert_eq!(*incident_count_delta, Some(2));
         assert_eq!(*severity_normalized, 0.5);
+        // The points path fills the hard event from the same alert.
+        let hard = detector.recent_hard_events().back().unwrap();
+        assert_eq!(hard.reason, "incident_count_increase");
+        assert_eq!(hard.severity_normalized, 0.5);
+        assert_eq!(hard.speed_drop_mps, 0.0);
     }
 
     /// Drive the detector at 60 Hz: `speeds` steps the car's EMA one tick
@@ -612,6 +603,19 @@ mod tests {
         let hard: Vec<&HardEvent> = detector.recent_hard_events().iter().collect();
         assert_eq!(hard.len(), 1);
         assert_eq!(hard[0].car_idx, 9);
+        // The hard event carries the alert's own magnitude, not a recomputed one.
+        let RaceEvent::IncidentAlert {
+            speed_drop_mps,
+            severity_normalized,
+            ..
+        } = alerts[0]
+        else {
+            unreachable!("matched above");
+        };
+        assert_eq!(hard[0].speed_drop_mps, *speed_drop_mps);
+        assert_eq!(hard[0].severity_normalized, *severity_normalized);
+        assert!(hard[0].speed_drop_mps >= HARD_DROP_MIN_MPS);
+        assert!(hard[0].severity_normalized >= 0.5);
         assert!(hard[0].session_time > 100.0);
         assert!(
             hard[0].session_time < 101.0,

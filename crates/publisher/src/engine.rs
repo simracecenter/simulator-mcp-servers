@@ -17,6 +17,7 @@ use crate::fuel_projection::FuelProjection;
 use crate::gap_finder::{find_cars_ahead, find_cars_behind};
 use crate::horizon::HorizonDetector;
 use crate::incident_cluster::IncidentClusterDetector;
+use crate::incident_outcome::{CarSample, IncidentOutcomeTracker};
 use crate::lap_timer::LapTimer;
 use crate::lift_coast::LiftCoastDetector;
 use crate::micro_sector::MicroSectorTracker;
@@ -113,6 +114,7 @@ pub struct NarrativeEngine {
     traffic_intercept: TrafficInterceptDetector,
     vulnerability: VulnerabilityDetector,
     incident_cluster: IncidentClusterDetector,
+    incident_outcome: IncidentOutcomeTracker,
     compression_zone: CompressionZoneDetector,
     track_length_m: f32,
     logged_tire_suppressed: bool,
@@ -174,6 +176,7 @@ impl NarrativeEngine {
             traffic_intercept: TrafficInterceptDetector::new(),
             vulnerability: VulnerabilityDetector::default(),
             incident_cluster: IncidentClusterDetector::new(),
+            incident_outcome: IncidentOutcomeTracker::new(),
             compression_zone: CompressionZoneDetector::new(),
             track_length_m: 5000.0,
             logged_tire_suppressed: false,
@@ -342,6 +345,16 @@ impl NarrativeEngine {
             frame.player_car_idx,
             frame.player_incident_count,
         ));
+        // Every frame: a hard event's watch must start on the frame it
+        // happened on, whatever the cadence.
+        let registry = &self.car_registry;
+        let sample = |car_idx: u8| outcome_sample(registry, frame, car_idx);
+        self.incident_outcome.observe(
+            frame.session_time,
+            frame.session_tick,
+            self.basic_incident.recent_hard_events(),
+            sample,
+        );
         if evaluate_incidents {
             events.extend(self.incident_cluster.update(
                 &self.car_registry,
@@ -351,6 +364,18 @@ impl NarrativeEngine {
                 frame.session_tick,
                 frame.session_flags & CAUTION != 0,
                 self.basic_incident.recent_hard_events(),
+            ));
+            // Live clusters, not only the one just raised: a car can have its
+            // hard event after the cluster it runs into was reported.
+            for active in self.incident_cluster.active_clusters.values() {
+                self.incident_outcome
+                    .link_cluster(active.incident_id, &active.car_idxs);
+            }
+            events.extend(self.incident_outcome.update(
+                frame.lap,
+                frame.session_time,
+                self.track_length_m,
+                sample,
             ));
         }
         self.tire_degradation.update_ema(frame);
@@ -1143,6 +1168,35 @@ struct MaterialGaps {
 
 /// Direction of a gap between two cadence samples. Only comparable while the
 /// neighbouring car is the same one.
+/// What the outcome tracker reads about one car. `None` once the registry
+/// has dropped the car.
+fn outcome_sample(
+    registry: &CarRegistry,
+    frame: &TelemetryFrame,
+    car_idx: u8,
+) -> Option<CarSample> {
+    let car = registry.get(car_idx)?;
+    let slot = car_idx as usize;
+    Some(CarSample {
+        // Straight from the frame: the registry stops updating a car whose
+        // position reads 0, which is how a car that has just left can look.
+        track_surface: frame
+            .car_idx_track_surface
+            .get(slot)
+            .copied()
+            .unwrap_or(car.track_surface),
+        on_pit_road: car.on_pit_road,
+        speed_mps: car.speed_ema_mps,
+        lap_dist_pct: car.lap_dist_pct,
+        position: frame
+            .car_idx_position
+            .get(slot)
+            .copied()
+            .filter(|position| *position > 0),
+        class_position: frame.class_position_of(car_idx),
+    })
+}
+
 fn gap_trend(previous: Option<(u8, f32)>, current: Option<(u8, f32)>) -> GapTrend {
     let (Some((prev_idx, prev_gap)), Some((idx, gap))) = (previous, current) else {
         return GapTrend::Unknown;
@@ -1316,17 +1370,153 @@ mod tests {
 
         // A cluster now needs a corroborating hard event in (or one bucket
         // downstream of) the slowed bucket, within the last 3 s.
-        engine.basic_incident.push_hard_event_for_test(
-            1,
-            frame.session_time - 0.5,
-            frame.session_tick,
-            0.500,
-            "speed_drop",
-        );
+        engine
+            .basic_incident
+            .push_hard_event_for_test(crate::basic_incident::HardEvent {
+                car_idx: 1,
+                session_time: frame.session_time - 0.5,
+                session_tick: frame.session_tick,
+                lap_dist_pct: 0.500,
+                reason: "speed_drop".to_owned(),
+                speed_drop_mps: 20.0,
+                severity_normalized: 0.6,
+            });
         let evaluated = engine.process_frame_with_incident_cadence(&frame, true);
         assert!(evaluated
             .iter()
             .any(|event| matches!(event, RaceEvent::IncidentCluster { .. })));
+    }
+
+    /// 60 Hz frames from `t = 100 s`: the rig (car 0) laps steadily, cars 1
+    /// and 2 run together at 50 m/s for two seconds and then stop dead a few
+    /// metres apart. `retire_car_1_at` takes car 1 out of the world.
+    fn crash_frame(i: i64, retire_car_1_at: f32) -> TelemetryFrame {
+        let t = 100.0 + i as f32 / 60.0;
+        let per_frame = 50.0 / 5000.0 / 60.0;
+        let moving = i.min(120) as f32 * per_frame;
+        let mut frame = frame_with_gap(1, t, 4, 0.0);
+        frame.session_tick = i;
+        frame.lap_dist_pct = 0.100 + i as f32 * per_frame;
+        frame.car_idx_lap_dist_pct = vec![frame.lap_dist_pct, 0.520 + moving, 0.522 + moving];
+        frame.car_idx_position = vec![3, 1, 2];
+        frame.player_car_position = 3;
+        frame.car_idx_class_position = vec![3, 1, 2];
+        frame.car_idx_on_pit_road = vec![false; 3];
+        frame.car_idx_track_surface = vec![3, if t >= retire_car_1_at { -1 } else { 3 }, 3];
+        frame.car_idx_lap_completed = vec![1; 3];
+        frame
+    }
+
+    #[test]
+    fn a_crash_is_followed_by_one_outcome_per_car_carrying_the_cluster() {
+        let mut engine = NarrativeEngine::new(10);
+        let mut events = Vec::new();
+        // 2 s of running, the stop, and 25 s after it. Car 1 is towed 6 s in.
+        for i in 0..=(27 * 60) {
+            events.extend(engine.process_frame(&crash_frame(i, 108.0)));
+        }
+
+        let alert_time = |idx: u8| {
+            events
+                .iter()
+                .find_map(|event| match event {
+                    RaceEvent::IncidentAlert {
+                        car_idx,
+                        session_time,
+                        ..
+                    } if *car_idx == idx => Some(*session_time),
+                    _ => None,
+                })
+                .expect("both cars alert")
+        };
+        let cluster_id = events
+            .iter()
+            .find_map(|event| match event {
+                RaceEvent::IncidentCluster {
+                    incident_id,
+                    impact_normalized,
+                    hard_events,
+                    ..
+                } => {
+                    assert_eq!(hard_events.len(), 2);
+                    assert!(*impact_normalized >= 0.5, "a hard stop from speed");
+                    Some(*incident_id)
+                }
+                _ => None,
+            })
+            .expect("two hard events in one bucket make a cluster");
+
+        let outcomes: Vec<&RaceEvent> = events
+            .iter()
+            .filter(|event| matches!(event, RaceEvent::IncidentOutcome { .. }))
+            .collect();
+        assert_eq!(outcomes.len(), 2, "one outcome per car: {outcomes:?}");
+
+        let RaceEvent::IncidentOutcome {
+            car_idx: 1,
+            session_time,
+            onset_session_time,
+            incident_id,
+            window_seconds,
+            left_world: true,
+            position_from: Some(1),
+            class_position_from: Some(1),
+            ..
+        } = outcomes[0]
+        else {
+            panic!("the towed car reports first: {:?}", outcomes[0]);
+        };
+        assert_eq!(*onset_session_time, alert_time(1), "joins to the alert");
+        assert_eq!(*incident_id, Some(cluster_id));
+        assert!((*session_time - 108.0).abs() < 0.05, "closed when it left");
+        assert!(*window_seconds < 7.0);
+
+        let RaceEvent::IncidentOutcome {
+            car_idx: 2,
+            onset_session_time,
+            incident_id,
+            window_seconds,
+            stopped_seconds,
+            left_world: false,
+            pitted: false,
+            position_from: Some(2),
+            position_to: Some(2),
+            places_lost: Some(0),
+            ..
+        } = outcomes[1]
+        else {
+            panic!("the stranded car reports at the end: {:?}", outcomes[1]);
+        };
+        assert_eq!(*onset_session_time, alert_time(2));
+        assert_eq!(*incident_id, Some(cluster_id));
+        assert!((*window_seconds - 20.0).abs() < 0.05);
+        assert!(
+            *stopped_seconds > 18.0,
+            "stationary for nearly all of it, got {stopped_seconds}"
+        );
+    }
+
+    #[test]
+    fn outcomes_are_only_closed_when_the_incident_cadence_is_due() {
+        let mut engine = NarrativeEngine::new(10);
+        let mut off_cadence = Vec::new();
+        for i in 0..=(27 * 60) {
+            off_cadence.extend(
+                engine.process_frame_with_incident_cadence(&crash_frame(i, f32::MAX), false),
+            );
+        }
+        assert!(!off_cadence
+            .iter()
+            .any(|event| matches!(event, RaceEvent::IncidentOutcome { .. })));
+        // The watches were opened on the frames the hard events happened on,
+        // so the first due cadence reports both.
+        let due = engine.process_frame(&crash_frame(27 * 60 + 1, f32::MAX));
+        assert_eq!(
+            due.iter()
+                .filter(|event| matches!(event, RaceEvent::IncidentOutcome { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]

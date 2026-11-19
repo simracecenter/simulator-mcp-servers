@@ -8,6 +8,7 @@ use publisher::race_event::{
     BattleBreakReason, BattleIdentity, BattlePhase, DriverEffort, FlagScope, GapTrend,
     LifecycleOrigin, RaceEvent, SessionKind, SessionPhase, SessionStateName, SessionStateReason,
 };
+use publisher::session_info::{CarRef, SessionRoster};
 use publisher::telemetry_frame::TelemetryFrame;
 use serde_json::Value;
 
@@ -793,23 +794,49 @@ fn incident_cluster_includes_all_car_refs() {
         ],
         severity: 3.0,
         severity_normalized: 0.16666667,
+        impact_normalized: 0.75,
         primary_car_idx: Some(1),
         incident_type: Some("Incident".to_owned()),
         detected_session_time: 371.5,
         trigger_car_idx: Some(1),
-        hard_events: vec![publisher::race_event::IncidentHardEvent {
-            car_idx: 1,
-            session_time: 370.0,
-            lap_dist_pct: 0.76,
-            reason: "speed_drop".to_owned(),
-        }],
+        hard_events: vec![
+            publisher::race_event::IncidentHardEvent {
+                car_idx: 1,
+                session_time: 370.0,
+                lap_dist_pct: 0.76,
+                reason: "speed_drop".to_owned(),
+                speed_drop_mps: 30.0,
+                severity_normalized: 0.75,
+            },
+            // Not in the roster: its car reference falls back to the stub.
+            publisher::race_event::IncidentHardEvent {
+                car_idx: 4,
+                session_time: 370.5,
+                lap_dist_pct: 0.78,
+                reason: "surface_drop".to_owned(),
+                speed_drop_mps: 6.0,
+                severity_normalized: 0.125,
+            },
+        ],
         corroboration: Some("slowed_and_hard_event".to_owned()),
     };
 
+    let roster = SessionRoster::from_cars([CarRef {
+        car_idx: 1,
+        car_number: "71".to_owned(),
+        driver_name: "Avery Example".to_owned(),
+        team_name: Some("Example Racing".to_owned()),
+        car_class_short_name: Some("GT3".to_owned()),
+        car_class_id: Some(2708),
+        user_id: Some(424_242),
+        irating: Some(3100),
+        lic_string: Some("A 3.21".to_owned()),
+        flair_name: None,
+    }]);
     let env = build_event(
         &event,
         &minimal_frame(),
-        None,
+        Some(&roster),
         "session-abc",
         "rig-001",
         None,
@@ -819,6 +846,32 @@ fn incident_cluster_includes_all_car_refs() {
 
     assert_envelope_contract(&json, "INCIDENT_CLUSTER");
 
+    // Each hard event carries the alert's own magnitude and a full car
+    // reference, shaped as the entries of `involvedCars` are.
+    let hard_events = json["payload"]["hardEvents"].as_array().unwrap();
+    assert_eq!(hard_events.len(), 2);
+    assert_eq!(hard_events[0]["speedDropMps"], 30.0);
+    assert_eq!(hard_events[0]["severityNormalized"], 0.75);
+    assert_eq!(hard_events[0]["car"]["carIdx"], 1);
+    assert_eq!(hard_events[0]["car"]["carNumber"], "71");
+    assert_eq!(hard_events[0]["car"]["driverName"], "Avery Example");
+    assert_eq!(hard_events[0]["car"]["userId"], 424_242);
+    assert_eq!(hard_events[0]["car"], json["payload"]["involvedCars"][0]);
+    assert_eq!(hard_events[1]["speedDropMps"], 6.0);
+    assert_eq!(hard_events[1]["severityNormalized"], 0.125);
+    assert_eq!(hard_events[1]["car"]["carIdx"], 4);
+    assert_eq!(hard_events[1]["car"]["carNumber"], "4");
+    assert_eq!(hard_events[1]["car"], json["payload"]["involvedCars"][2]);
+
+    // How hard the hardest hit was. Under its own key: `severityNormalized`
+    // on a cluster is the car-count measure deployed consumers escalate on,
+    // and it must keep that value whatever the impact is.
+    assert_eq!(json["payload"]["impactNormalized"], 0.75);
+    let field_severity = json["payload"]["severityNormalized"].as_f64().unwrap();
+    assert!((field_severity - 1.0 / 6.0).abs() < 1e-6);
+    assert_eq!(json["payload"]["severity"], 3.0);
+    assert!(json["payload"].get("severityScore").is_none());
+
     // Onset vs detection and corroboration metadata
     assert_eq!(json["payload"]["onsetSessionTime"], 370.0);
     assert_eq!(json["payload"]["sessionTime"], 370.0);
@@ -826,8 +879,6 @@ fn incident_cluster_includes_all_car_refs() {
     assert_eq!(json["payload"]["triggerCarIdx"], 1);
     assert_eq!(json["payload"]["triggerCar"]["carIdx"], 1);
     assert_eq!(json["payload"]["corroboration"], "slowed_and_hard_event");
-    let hard_events = json["payload"]["hardEvents"].as_array().unwrap();
-    assert_eq!(hard_events.len(), 1);
     assert_eq!(hard_events[0]["carIdx"], 1);
     assert_eq!(hard_events[0]["sessionTime"], 370.0);
     assert!((hard_events[0]["lapDistPct"].as_f64().unwrap() - 0.76).abs() < 1e-4);
@@ -883,6 +934,298 @@ fn incident_cluster_includes_all_car_refs() {
 }
 
 #[test]
+fn incident_cluster_serialises_without_a_roster_or_hard_events() {
+    let cluster = |hard_events: Vec<publisher::race_event::IncidentHardEvent>| {
+        let impact_normalized = hard_events
+            .iter()
+            .map(|ev| ev.severity_normalized)
+            .fold(0.0, f32::max);
+        RaceEvent::IncidentCluster {
+            lap: 6,
+            session_time: 370.0,
+            session_tick: 9876,
+            incident_id: 13,
+            bucket: 15,
+            lap_dist_pct_from: 0.75,
+            lap_dist_pct_to: 0.80,
+            car_idxs: vec![40, 41],
+            participants: Vec::new(),
+            severity: 2.0,
+            severity_normalized: 0.5,
+            impact_normalized,
+            primary_car_idx: Some(40),
+            incident_type: Some("Incident".to_owned()),
+            detected_session_time: 371.0,
+            trigger_car_idx: Some(40),
+            hard_events,
+            corroboration: Some("multiple_hard_events".to_owned()),
+        }
+    };
+    let build = |event: &RaceEvent| {
+        normalized_event_json(&build_event(
+            event,
+            &minimal_frame(),
+            None,
+            "session-abc",
+            "rig-001",
+            None,
+            None,
+        ))
+    };
+
+    // No roster at all: every hard-event car is the index-only stub.
+    let json = build(&cluster(vec![
+        publisher::race_event::IncidentHardEvent {
+            car_idx: 40,
+            session_time: 370.0,
+            lap_dist_pct: 0.76,
+            reason: "speed_drop".to_owned(),
+            speed_drop_mps: 25.0,
+            severity_normalized: 0.6,
+        },
+        publisher::race_event::IncidentHardEvent {
+            car_idx: 41,
+            session_time: 370.4,
+            lap_dist_pct: 0.77,
+            reason: "speed_drop".to_owned(),
+            speed_drop_mps: 40.0,
+            severity_normalized: 0.9,
+        },
+    ]));
+    assert_envelope_contract(&json, "INCIDENT_CLUSTER");
+    let hard_events = json["payload"]["hardEvents"].as_array().unwrap();
+    assert_eq!(hard_events.len(), 2);
+    for (entry, idx) in hard_events.iter().zip([40, 41]) {
+        assert_eq!(entry["car"]["carIdx"], idx);
+        assert_eq!(entry["car"]["carNumber"], idx.to_string());
+        assert_eq!(entry["car"]["driverName"], "");
+        assert!(entry["car"]["userId"].is_null());
+    }
+    let impact = json["payload"]["impactNormalized"].as_f64().unwrap();
+    assert!((impact - 0.9).abs() < 1e-6);
+    assert_eq!(json["payload"]["corroboration"], "multiple_hard_events");
+
+    // No hard events: the list is empty and the impact is zero, not absent.
+    let json = build(&cluster(Vec::new()));
+    assert_envelope_contract(&json, "INCIDENT_CLUSTER");
+    assert_eq!(json["payload"]["hardEvents"], serde_json::json!([]));
+    assert_eq!(json["payload"]["impactNormalized"], 0.0);
+}
+
+#[test]
+fn incident_outcome_carries_the_cars_fate_and_the_cluster_key() {
+    let event = RaceEvent::IncidentOutcome {
+        lap: 6,
+        session_time: 390.0,
+        car_idx: 2,
+        onset_session_time: 370.0,
+        incident_id: Some(12),
+        window_seconds: 20.0,
+        stopped_seconds: 11.5,
+        off_track_seconds: 4.25,
+        left_world: false,
+        pitted: true,
+        went_backwards: true,
+        position_from: Some(4),
+        position_to: Some(9),
+        places_lost: Some(5),
+        class_position_from: Some(2),
+        class_position_to: Some(5),
+    };
+    let json = normalized_event_json(&build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+
+    assert_envelope_contract(&json, "INCIDENT_OUTCOME");
+    assert_eq!(json["scope"], "CAR_SCOPED");
+    // About the car that had the incident, not the rig that saw it.
+    assert_eq!(json["car"]["carIdx"], 2);
+    assert_eq!(json["subject"]["carIdx"], 2);
+    assert_eq!(json["subject"]["role"], "INCIDENT");
+
+    let payload = &json["payload"];
+    assert_eq!(payload["subjectRole"], "INCIDENT");
+    assert_eq!(payload["subjectCarIdx"], 2);
+    assert_eq!(payload["carIdx"], 2);
+    assert_eq!(payload["onsetSessionTime"], 370.0);
+    assert_eq!(payload["sessionTime"], 390.0);
+    assert_eq!(payload["windowSeconds"], 20.0);
+    assert_eq!(payload["stoppedSeconds"], 11.5);
+    assert_eq!(payload["offTrackSeconds"], 4.25);
+    assert_eq!(payload["leftWorld"], false);
+    assert_eq!(payload["pitted"], true);
+    assert_eq!(payload["wentBackwards"], true);
+    assert_eq!(payload["positionFrom"], 4);
+    assert_eq!(payload["positionTo"], 9);
+    assert_eq!(payload["placesLost"], 5);
+    assert_eq!(payload["classPositionFrom"], 2);
+    assert_eq!(payload["classPositionTo"], 5);
+
+    // The same key the cluster with this id carries.
+    let cluster = RaceEvent::IncidentCluster {
+        lap: 6,
+        session_time: 370.0,
+        session_tick: 9876,
+        incident_id: 12,
+        bucket: 15,
+        lap_dist_pct_from: 0.75,
+        lap_dist_pct_to: 0.80,
+        car_idxs: vec![1, 2],
+        participants: Vec::new(),
+        severity: 2.0,
+        severity_normalized: 0.5,
+        impact_normalized: 0.8,
+        primary_car_idx: Some(1),
+        incident_type: Some("Incident".to_owned()),
+        detected_session_time: 371.0,
+        trigger_car_idx: Some(1),
+        hard_events: Vec::new(),
+        corroboration: Some("multiple_hard_events".to_owned()),
+    };
+    let cluster_json = normalized_event_json(&build_event(
+        &cluster,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+    assert!(payload["incidentKey"]
+        .as_str()
+        .is_some_and(|key| key.ends_with(":incident:12")));
+    assert_eq!(
+        payload["incidentKey"],
+        cluster_json["payload"]["incidentKey"]
+    );
+}
+
+#[test]
+fn incident_outcome_omits_keys_it_has_no_value_for() {
+    // A single-car incident for a car with no position yet.
+    let event = RaceEvent::IncidentOutcome {
+        lap: 2,
+        session_time: 64.5,
+        car_idx: 7,
+        onset_session_time: 60.0,
+        incident_id: None,
+        window_seconds: 4.5,
+        stopped_seconds: 3.0,
+        off_track_seconds: 0.0,
+        left_world: true,
+        pitted: false,
+        went_backwards: false,
+        position_from: None,
+        position_to: None,
+        places_lost: None,
+        class_position_from: None,
+        class_position_to: None,
+    };
+    let json = normalized_event_json(&build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+
+    assert_envelope_contract(&json, "INCIDENT_OUTCOME");
+    let payload = json["payload"].as_object().unwrap();
+    // Omitted, never null — in either spelling.
+    for key in [
+        "incidentKey",
+        "incidentId",
+        "incident_id",
+        "positionFrom",
+        "position_from",
+        "positionTo",
+        "position_to",
+        "placesLost",
+        "places_lost",
+        "classPositionFrom",
+        "class_position_from",
+        "classPositionTo",
+        "class_position_to",
+    ] {
+        assert!(!payload.contains_key(key), "{key} should be omitted");
+    }
+    // The join key for a single-car incident is the car and the onset.
+    assert_eq!(payload["carIdx"], 7);
+    assert_eq!(payload["onsetSessionTime"], 60.0);
+    // Facts that are always known are always present.
+    assert_eq!(payload["windowSeconds"], 4.5);
+    assert_eq!(payload["stoppedSeconds"], 3.0);
+    assert_eq!(payload["offTrackSeconds"], 0.0);
+    assert_eq!(payload["leftWorld"], true);
+    assert_eq!(payload["pitted"], false);
+    assert_eq!(payload["wentBackwards"], false);
+}
+
+#[test]
+fn incident_outcome_onset_equals_the_alerts_session_time() {
+    // Both are the hard event's own f32 time, so a consumer can join a
+    // single-car outcome to its alert on (car, time) by equality.
+    let onset = 1234.5678_f32;
+    let build = |event: &RaceEvent| {
+        normalized_event_json(&build_event(
+            event,
+            &minimal_frame(),
+            None,
+            "session-abc",
+            "rig-001",
+            None,
+            None,
+        ))
+    };
+    let alert = build(&RaceEvent::IncidentAlert {
+        lap: 6,
+        session_time: onset,
+        car_idx: 2,
+        driver_incident_count: None,
+        previous_track_surface: 3,
+        current_track_surface: 3,
+        previous_speed_mps: 50.0,
+        current_speed_mps: 10.0,
+        speed_drop_mps: 40.0,
+        severity: 0.8,
+        severity_normalized: 0.8,
+        incident_count_delta: None,
+        reason: "speed_drop".to_owned(),
+    });
+    let outcome = build(&RaceEvent::IncidentOutcome {
+        lap: 6,
+        session_time: onset + 20.0,
+        car_idx: 2,
+        onset_session_time: onset,
+        incident_id: None,
+        window_seconds: 20.0,
+        stopped_seconds: 0.0,
+        off_track_seconds: 0.0,
+        left_world: false,
+        pitted: false,
+        went_backwards: false,
+        position_from: Some(3),
+        position_to: Some(3),
+        places_lost: Some(0),
+        class_position_from: None,
+        class_position_to: None,
+    });
+    assert_eq!(
+        outcome["payload"]["onsetSessionTime"],
+        alert["payload"]["sessionTime"]
+    );
+    assert_eq!(outcome["payload"]["carIdx"], alert["payload"]["carIdx"]);
+}
+
+#[test]
 fn incident_resolution_reuses_stable_incident_key() {
     let opened = RaceEvent::IncidentCluster {
         lap: 6,
@@ -896,6 +1239,7 @@ fn incident_resolution_reuses_stable_incident_key() {
         participants: Vec::new(),
         severity: 3.0,
         severity_normalized: 0.16666667,
+        impact_normalized: 0.0,
         primary_car_idx: Some(1),
         incident_type: Some("Incident".to_owned()),
         detected_session_time: 370.0,

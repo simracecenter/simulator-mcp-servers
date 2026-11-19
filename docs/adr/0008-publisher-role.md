@@ -171,6 +171,152 @@ Director rejects the batch that contains a `CAR_FINISHED`, and the publisher
 treats that 4xx as terminal and quarantines the batch (see "Durable ingest
 delivery" above), losing the events that shared it.
 
+## Incident facts (2026-11-19 amendment)
+
+Director ranks incidents for replay and needs to know how hard each car hit
+and what became of it. The facts are measured here, at the source, and sent as
+optional keys and one new event. Nothing in this amendment changes a key that
+was already on the wire.
+
+### Cluster facts on `INCIDENT_CLUSTER`
+
+A cluster is corroborated by one or more hard events, and each hard event is
+an `INCIDENT_ALERT` the publisher already sent. The cluster now repeats what
+those alerts measured, so a consumer does not have to find and join them.
+
+| Key | Value |
+| --- | --- |
+| `hardEvents[]` | One entry per corroborating hard event. Already carried `carIdx`, `sessionTime`, `lapDistPct` and `reason`; gains the three keys below. |
+| `hardEvents[].car` | Full car reference, shaped as the entries of `involvedCars`. A car the roster cannot resolve gets the same index-only stub as everywhere else. |
+| `hardEvents[].speedDropMps` | The alert's own `speedDropMps`. |
+| `hardEvents[].severityNormalized` | The alert's own `severityNormalized`, 0 to 1. |
+| `impactNormalized` | 0 to 1: the largest `severityNormalized` in `hardEvents`. `0` when the list is empty. |
+| `corroboration` | `slowed_and_hard_event` or `multiple_hard_events` (unchanged). |
+| `detectedSessionTime` | When the detector fired (unchanged). `onsetSessionTime` / `sessionTime` stay the earliest hard event and the replay seek point. |
+
+**Why `impactNormalized` and not `severityNormalized`.** A cluster already
+sends `severity` (the number of cars involved) and `severityNormalized` (that
+count mapped onto 0 to 1, with a floor of 0.5 for a cluster made of two hard
+events). Every Director already deployed reads `severityNormalized` on a
+cluster and raises the event to `emergency` at 0.5 or more. A hard speed drop
+is 0.5 or more by construction, so putting the impact under that key would
+change what airs on a Director that was never updated, and removing the key
+would change it the other way. Both keys therefore stay exactly as they were,
+meaning how much of the field is caught up, and the violence of the incident
+goes under a new key that changes nothing until a consumer reads it. A contract
+test pins the cluster's `severityNormalized` to the car-count value.
+
+### `INCIDENT_OUTCOME`
+
+An alert says a car hit something. It cannot say whether the car drove on or
+was finished, because that is not known yet. `INCIDENT_OUTCOME` (car-scoped,
+subject role `INCIDENT`, the envelope `car` being the car it is about) is sent
+once per car per incident when it is known.
+
+The publisher opens a watch on a car at each hard event, that is, each
+`INCIDENT_ALERT`. A second hard event for the same car while its watch is open
+extends the watch and does not open another, so a car that is hit twice gets
+one outcome. On each incident cadence (`incident_cluster_interval_ms`) the
+watch records what the car is doing. It closes 20 s after the latest hard
+event, and never later than 60 s after the first, or at once when the car
+leaves the world (`CarIdxTrackSurface` −1: tow, retirement or disconnect). No
+watch is opened for a car on pit road or out of the world. Watches are dropped
+on a session clock restart and on a session transition, as the other
+detectors' state is, so an incident in the last seconds of a session may have
+no outcome.
+
+| Key | Value |
+| --- | --- |
+| `carIdx` | The car. |
+| `onsetSessionTime` | The first hard event's time. Equal to the `sessionTime` of that car's `INCIDENT_ALERT`; with `carIdx` it is the join key for a single-car incident. |
+| `sessionTime` | When the outcome was emitted. |
+| `incidentKey` | The `incidentKey` of the cluster the car's incident belongs to. Omitted for a single-car incident. |
+| `windowSeconds` | How long the car was watched: 20, more if extended, less if it left the world. |
+| `stoppedSeconds` | Time in the world, off pit road and under 5 m/s. |
+| `offTrackSeconds` | Time on the off-track surface (`CarIdxTrackSurface` 0). |
+| `leftWorld` | The car left the world inside the window. |
+| `pitted` | The car was on pit road at some point inside the window. |
+| `wentBackwards` | The car's lap distance ran backwards by 5 m or more in total, off pit road. |
+| `positionFrom`, `positionTo`, `placesLost` | Overall position at the onset and at the end of the window (the last one seen while the car was in the world), and the difference, never below 0. All three are omitted when the car had no position at the onset. |
+| `classPositionFrom`, `classPositionTo` | The same in class. Each is omitted when the SDK has no value. |
+
+Optional keys are omitted, never `null`. As on every event, each snake_case
+field also appears under its original name for the transition window.
+
+A watch takes the key of a cluster when the cluster detector, on a cadence
+while the watch is open, has the car among a live cluster's cars. A car that
+left the world before the cluster was raised has already reported, without
+`incidentKey`; it joins by `carIdx` and `onsetSessionTime`, which match its
+entry in the cluster's `hardEvents`.
+
+**Limits.**
+
+- Speed is known directly only for the rig's own car. For every other car it
+  is derived from lap distance, so "stopped" means not moving along the track:
+  a car spinning on the spot, or sliding sideways across the circuit, reads as
+  stopped.
+- The same derivation makes `wentBackwards` blind across the start/finish
+  line: a fall in lap distance of more than half a lap is taken to be the
+  line, not a car reversing.
+- `positionTo` and `placesLost` are only as fresh as iRacing's positions. If
+  iRacing moves `CarIdxPosition` only when cars cross a timing line, a car
+  that stops on a long lap can still show its old position 20 s later, and
+  `placesLost` under-reports. The probe below exists to measure this; until it
+  has, treat `placesLost` as a lower bound.
+- Samples are taken on the incident cadence (250 ms by default), so the
+  durations are accurate to about that.
+
+### Live probe
+
+Three later decisions rest on iRacing behaviour that cannot be checked from
+code: whether `CarIdxSessionFlags` is filled for cars other than the rig's,
+whether other cars' incident totals are visible while a race is running, and
+whether `CarIdxPosition` moves within seconds of a car stopping or only at the
+next timing line. The publisher carries a diagnostic to settle them from one
+real session (`src/probe.rs`).
+
+It is off unless the environment variable `SRC_PUBLISHER_PROBE` is `1`. Off, it
+costs one branch per frame and reads nothing extra. On, it only writes lines
+to the publisher log, prefixed `[probe]`; it publishes nothing and changes no
+event. The lines carry car indices and counts, never driver names.
+
+- **On connect**, for each of `CarIdxSessionFlags`,
+  `CarIdxTrackSurfaceMaterial`, `LatAccel`, `LongAccel` and `VertAccel`:
+  whether the SDK variable header has it, its type and its count.
+- **At each hard event**, and again 5 s and 20 s later: that car's
+  `CarIdxSessionFlags` (hex) and `CarIdxTrackSurfaceMaterial`, or `absent`,
+  and its `CarIdxPosition`.
+- **Each time the session results change**, per session in the YAML's
+  `ResultsPositions`: how many cars are listed, how many have a non-zero
+  `Incidents`, the total, and each distinct `ReasonOutStr` with its count.
+
+The two per-car arrays are read straight from the telemetry buffer, only when
+a sample is due, and apart from the frame the engine uses: a variable that is
+missing, of another type or out of bounds reads as absent and cannot cost a
+frame.
+
+The probe has to be run in an official race: other drivers' incident counts
+may be hidden there and visible in a test session. Its findings are to be
+written into this amendment; the `placesLost` limit above, per-car flags on
+`INCIDENT_OUTCOME` and any use of surface material or incident totals wait on
+them.
+
+### Payload contract version
+
+`PAYLOAD_CONTRACT_VERSION` stays at `3`, by the rule under "Payload contract
+versioning" above: every key added here is optional for the consumer, no
+existing key changes meaning or shape, and the new event type is announced
+through `contracts/publisher-event-catalog.json`.
+
+### Rollout order
+
+As for `CAR_FINISHED`: Director must take the regenerated catalog, with
+`INCIDENT_OUTCOME` in it, **before** a publisher that emits the event is
+installed on a Rig. Until then a Director rejects every batch that contains an
+`INCIDENT_OUTCOME`, the publisher treats that 4xx as terminal and quarantines
+the batch, and the events that shared the batch are lost with it. The cluster
+keys above need no ordering: a Director that does not know them ignores them.
+
 ## References
 
 - [ADR 0003](0003-single-active-simulator-constraint.md)

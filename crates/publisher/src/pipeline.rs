@@ -146,6 +146,19 @@ pub fn run_pipeline(
         None => return Ok(()),
     };
 
+    // Live probe (ADR 0008, "Incident facts"): `None` unless switched on by
+    // the environment, so the loop below pays one branch for it.
+    let mut probe = crate::probe::Probe::from_env();
+    let log_probe_vars = |reader: &crate::sim_bridge::SharedMemReader| {
+        for line in crate::probe::var_header_lines(|name| reader.probe_var(name)) {
+            log_info!("{line}");
+        }
+    };
+    if probe.is_some() {
+        log_info!("[probe] live probe is on ({}=1)", crate::probe::ENV_VAR);
+        log_probe_vars(&reader);
+    }
+
     // ── Initialise components ─────────────────────────────────────────────
 
     let mut engine = NarrativeEngine::new(10);
@@ -255,6 +268,10 @@ pub fn run_pipeline(
                 Some(r) => r,
                 None => break,
             };
+            // The variable header can differ between sim sessions.
+            if probe.is_some() {
+                log_probe_vars(&reader);
+            }
             engine = NarrativeEngine::new(10);
             lifecycle = LifecyclePublisher::new(env!("CARGO_PKG_VERSION"));
             roster_cache = RosterCache::new();
@@ -310,6 +327,11 @@ pub fn run_pipeline(
                 {
                     if let Some(yaml) = reader.read_session_info() {
                         session_info_read_failures = 0;
+                        if let Some(probe) = probe.as_mut() {
+                            for line in probe.on_session_info(&yaml) {
+                                log_info!("{line}");
+                            }
+                        }
                         // For AI/offline sessions iRacing never assigns a real
                         // SubSessionID (always 0). Detect this and synthesise a
                         // stable negative ID so events are still published.
@@ -618,6 +640,11 @@ pub fn run_pipeline(
                 let roster = roster_cache.roster();
                 let evaluate_incidents = incident_cluster.due(Instant::now());
                 let events = engine.process_frame_with_incident_cadence(&frame, evaluate_incidents);
+                if let Some(probe) = probe.as_mut() {
+                    for line in probe.on_frame(&frame, &events, || reader.read_probe_car_arrays()) {
+                        log_info!("{line}");
+                    }
+                }
 
                 for event in &events {
                     log_event(event, roster, &frame);
@@ -972,6 +999,20 @@ fn log_event(
         } => {
             let player = car_num(roster, *car_idx);
             log_info!("[publisher] INCIDENT_ALERT — #{player}, {reason}, speed drop {speed_drop_mps:.1} m/s");
+        }
+        RaceEvent::IncidentOutcome {
+            car_idx,
+            window_seconds,
+            stopped_seconds,
+            left_world,
+            pitted,
+            ..
+        } => {
+            let player = car_num(roster, *car_idx);
+            log_info!(
+                "[publisher] INCIDENT_OUTCOME — #{player}, watched {window_seconds:.1}s, \
+                 stopped {stopped_seconds:.1}s, left world {left_world}, pitted {pitted}"
+            );
         }
         RaceEvent::BattleEngaged {
             player_car_idx,

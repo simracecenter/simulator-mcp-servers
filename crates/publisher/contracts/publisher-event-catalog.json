@@ -164,6 +164,10 @@
     {
       "scope": "CAR_SCOPED",
       "type": "CAR_FINISHED"
+    },
+    {
+      "scope": "CAR_SCOPED",
+      "type": "INCIDENT_OUTCOME"
     }
   ],
   "schemaVersion": 1,
