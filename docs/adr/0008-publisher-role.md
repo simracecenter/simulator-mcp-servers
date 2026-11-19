@@ -266,6 +266,41 @@ entry in the cluster's `hardEvents`.
 - Samples are taken on the incident cadence (250 ms by default), so the
   durations are accurate to about that.
 
+### Live probe
+
+Three later decisions rest on iRacing behaviour that cannot be checked from
+code: whether `CarIdxSessionFlags` is filled for cars other than the rig's,
+whether other cars' incident totals are visible while a race is running, and
+whether `CarIdxPosition` moves within seconds of a car stopping or only at the
+next timing line. The publisher carries a diagnostic to settle them from one
+real session (`src/probe.rs`).
+
+It is off unless the environment variable `SRC_PUBLISHER_PROBE` is `1`. Off, it
+costs one branch per frame and reads nothing extra. On, it only writes lines
+to the publisher log, prefixed `[probe]`; it publishes nothing and changes no
+event. The lines carry car indices and counts, never driver names.
+
+- **On connect**, for each of `CarIdxSessionFlags`,
+  `CarIdxTrackSurfaceMaterial`, `LatAccel`, `LongAccel` and `VertAccel`:
+  whether the SDK variable header has it, its type and its count.
+- **At each hard event**, and again 5 s and 20 s later: that car's
+  `CarIdxSessionFlags` (hex) and `CarIdxTrackSurfaceMaterial`, or `absent`,
+  and its `CarIdxPosition`.
+- **Each time the session results change**, per session in the YAML's
+  `ResultsPositions`: how many cars are listed, how many have a non-zero
+  `Incidents`, the total, and each distinct `ReasonOutStr` with its count.
+
+The two per-car arrays are read straight from the telemetry buffer, only when
+a sample is due, and apart from the frame the engine uses: a variable that is
+missing, of another type or out of bounds reads as absent and cannot cost a
+frame.
+
+The probe has to be run in an official race: other drivers' incident counts
+may be hidden there and visible in a test session. Its findings are to be
+written into this amendment; the `placesLost` limit above, per-car flags on
+`INCIDENT_OUTCOME` and any use of surface material or incident totals wait on
+them.
+
 ### Payload contract version
 
 `PAYLOAD_CONTRACT_VERSION` stays at `3`, by the rule under "Payload contract

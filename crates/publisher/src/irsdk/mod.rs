@@ -88,6 +88,9 @@ mod platform {
         mmap_handle: HANDLE,
         event_handle: HANDLE,
         var_index: VarIndex,
+        /// Candidate variables for the live probe. Empty unless the probe is
+        /// switched on; never consulted when building a frame.
+        probe_vars: VarIndex,
         buf_len: usize,
     }
 
@@ -159,6 +162,14 @@ mod platform {
                 return Err(SharedMemError::MissingVars);
             }
 
+            // Diagnostic extras: looked up only when the probe is on, and
+            // never a reason to refuse the connection.
+            let probe_vars = if crate::probe::enabled() {
+                build_var_index(mmap_slice, &hdr, crate::probe::CANDIDATE_VARS).unwrap_or_default()
+            } else {
+                VarIndex::new()
+            };
+
             let event_name = event_name();
             let event_handle = unsafe { OpenEventW(SYNCHRONIZE, 0, wide(&event_name).as_ptr()) };
             if event_handle.is_null() || event_handle == INVALID_HANDLE_VALUE {
@@ -176,6 +187,7 @@ mod platform {
                 mmap_handle,
                 event_handle,
                 var_index,
+                probe_vars,
                 buf_len: hdr.buf_len as usize,
             })
         }
@@ -212,6 +224,33 @@ mod platform {
                 &self.var_index,
                 hdr.session_info_update as u32,
             )
+        }
+
+        /// SDK header entry for one of the live probe's candidate variables.
+        /// `None` when the variable is absent or the probe is off.
+        pub fn probe_var(&self, name: &str) -> Option<crate::probe::VarHeader> {
+            self.probe_vars
+                .get(name)
+                .map(|var| crate::probe::VarHeader {
+                    type_code: var.type_code,
+                    offset: var.offset,
+                    count: var.count,
+                })
+        }
+
+        /// Read the live probe's per-car arrays from the latest telemetry
+        /// buffer. Separate from `read_frame` so a missing or odd variable
+        /// can never cost a frame; anything unreadable comes back absent.
+        pub fn read_probe_car_arrays(&self) -> crate::probe::CarArrays {
+            let mmap = unsafe { std::slice::from_raw_parts(self.map_view, MAX_MMAP_SIZE) };
+            let buf = parse_header(mmap).and_then(|hdr| {
+                let start = latest_buf(&hdr.var_bufs).buf_offset as usize;
+                mmap.get(start..start.checked_add(self.buf_len)?)
+            });
+            match buf {
+                Some(buf) => crate::probe::CarArrays::read(buf, |name| self.probe_var(name)),
+                None => crate::probe::CarArrays::default(),
+            }
         }
 
         /// Read the SessionInfo YAML blob from the mmap.

@@ -33,6 +33,7 @@ pub mod lift_coast;
 pub mod micro_sector;
 pub mod outbox;
 pub mod pipeline;
+pub mod probe;
 pub mod publisher_event;
 pub mod publisher_status;
 pub mod race_event;
