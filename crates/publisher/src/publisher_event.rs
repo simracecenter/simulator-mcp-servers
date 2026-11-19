@@ -309,7 +309,9 @@ fn primary_car_idx(event: &RaceEvent, player_car_idx: u8) -> u8 {
         | RaceEvent::BattleClosing {
             opponent_car_idx, ..
         } => *opponent_car_idx,
-        RaceEvent::IncidentAlert { car_idx, .. } => *car_idx,
+        RaceEvent::IncidentAlert { car_idx, .. } | RaceEvent::IncidentOutcome { car_idx, .. } => {
+            *car_idx
+        }
         RaceEvent::FocusMeRequested { player_car_idx, .. }
         | RaceEvent::DriverApprovalAnswered { player_car_idx, .. }
         | RaceEvent::CarFinished { player_car_idx, .. } => *player_car_idx,
@@ -506,7 +508,7 @@ fn event_roles(event: &RaceEvent, frame: &TelemetryFrame) -> EventRoles {
             overtaken_car_idx,
             ..
         } => EventRoles::duel(*car_idx, *overtaken_car_idx),
-        RaceEvent::IncidentAlert { car_idx, .. } => {
+        RaceEvent::IncidentAlert { car_idx, .. } | RaceEvent::IncidentOutcome { car_idx, .. } => {
             EventRoles::solo(*car_idx, SubjectRole::Incident)
         }
         RaceEvent::IncidentCluster {
@@ -1079,6 +1081,17 @@ fn enrich_payload(
                 .map(|idx| serde_json::to_value(resolve_car(idx, roster)).unwrap_or(Value::Null))
                 .unwrap_or(Value::Null);
             obj.insert("triggerCar".to_owned(), trigger);
+        }
+        // The same key the cluster carries, so the outcome joins to it.
+        // Omitted — never null — for a single-car incident.
+        RaceEvent::IncidentOutcome {
+            incident_id: Some(incident_id),
+            ..
+        } => {
+            obj.insert(
+                "incidentKey".to_owned(),
+                Value::from(incident_key(*incident_id)),
+            );
         }
         RaceEvent::IncidentClusterResolved {
             incident_id,

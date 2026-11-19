@@ -973,6 +973,20 @@ fn log_event(
             let player = car_num(roster, *car_idx);
             log_info!("[publisher] INCIDENT_ALERT — #{player}, {reason}, speed drop {speed_drop_mps:.1} m/s");
         }
+        RaceEvent::IncidentOutcome {
+            car_idx,
+            window_seconds,
+            stopped_seconds,
+            left_world,
+            pitted,
+            ..
+        } => {
+            let player = car_num(roster, *car_idx);
+            log_info!(
+                "[publisher] INCIDENT_OUTCOME — #{player}, watched {window_seconds:.1}s, \
+                 stopped {stopped_seconds:.1}s, left world {left_world}, pitted {pitted}"
+            );
+        }
         RaceEvent::BattleEngaged {
             player_car_idx,
             opponent_car_idx,

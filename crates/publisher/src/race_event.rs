@@ -793,6 +793,50 @@ pub enum RaceEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         team_incident_count: Option<i32>,
     },
+    /// What became of a car in the seconds after a hard incident signal: one
+    /// per car per incident, emitted when the watch on the car closes —
+    /// `window_seconds` after the onset, or at once when the car leaves the
+    /// world. `session_time` is when it was emitted; `onset_session_time` is
+    /// the hard event, equal to the `session_time` of that car's
+    /// `INCIDENT_ALERT`.
+    IncidentOutcome {
+        lap: u32,
+        session_time: f32,
+        car_idx: u8,
+        onset_session_time: f32,
+        /// The cluster this car's incident belongs to. Omitted for a
+        /// single-car incident; the join key is then the car and
+        /// `onset_session_time`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        incident_id: Option<u32>,
+        /// How long the car was watched.
+        window_seconds: f32,
+        /// Time in the world, off pit road and not moving along the track.
+        stopped_seconds: f32,
+        /// Time on the off-track surface.
+        off_track_seconds: f32,
+        /// The car left the world inside the window: tow, retirement or
+        /// disconnect.
+        left_world: bool,
+        /// The car was on pit road at some point inside the window.
+        pitted: bool,
+        /// The car travelled against the direction of the lap.
+        went_backwards: bool,
+        /// Overall position at the onset and at the end of the window. All
+        /// three position keys are omitted when the car had no position.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        position_from: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        position_to: Option<u8>,
+        /// `position_to - position_from`, never below zero.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        places_lost: Option<u8>,
+        /// Omitted when the SDK has no class position.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position_from: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        class_position_to: Option<u8>,
+    },
     /// The publisher discarded all session-scoped state because iRacing moved to
     /// a different session. Consumers should drop cached car indices, battles,
     /// and driver bindings for `previous_sub_session_id` when they see this.
@@ -915,6 +959,7 @@ pub enum RaceEventKind {
     BroadcastControlRequested,
     SessionState,
     CarFinished,
+    IncidentOutcome,
 }
 
 impl RaceEventKind {
@@ -969,6 +1014,7 @@ impl RaceEventKind {
             | Self::TrafficCompressionZone
             | Self::DriverMaterial
             | Self::CarFinished
+            | Self::IncidentOutcome
             | Self::FocusMeRequested
             | Self::DriverApprovalAnswered => EventScope::CarScoped,
         }
@@ -1019,6 +1065,7 @@ impl RaceEvent {
             Self::SessionState { .. } => RaceEventKind::SessionState,
             Self::BroadcastControlRequested { .. } => RaceEventKind::BroadcastControlRequested,
             Self::CarFinished { .. } => RaceEventKind::CarFinished,
+            Self::IncidentOutcome { .. } => RaceEventKind::IncidentOutcome,
         }
     }
 

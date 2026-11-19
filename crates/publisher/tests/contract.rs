@@ -1013,6 +1013,219 @@ fn incident_cluster_serialises_without_a_roster_or_hard_events() {
 }
 
 #[test]
+fn incident_outcome_carries_the_cars_fate_and_the_cluster_key() {
+    let event = RaceEvent::IncidentOutcome {
+        lap: 6,
+        session_time: 390.0,
+        car_idx: 2,
+        onset_session_time: 370.0,
+        incident_id: Some(12),
+        window_seconds: 20.0,
+        stopped_seconds: 11.5,
+        off_track_seconds: 4.25,
+        left_world: false,
+        pitted: true,
+        went_backwards: true,
+        position_from: Some(4),
+        position_to: Some(9),
+        places_lost: Some(5),
+        class_position_from: Some(2),
+        class_position_to: Some(5),
+    };
+    let json = normalized_event_json(&build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+
+    assert_envelope_contract(&json, "INCIDENT_OUTCOME");
+    assert_eq!(json["scope"], "CAR_SCOPED");
+    // About the car that had the incident, not the rig that saw it.
+    assert_eq!(json["car"]["carIdx"], 2);
+    assert_eq!(json["subject"]["carIdx"], 2);
+    assert_eq!(json["subject"]["role"], "INCIDENT");
+
+    let payload = &json["payload"];
+    assert_eq!(payload["subjectRole"], "INCIDENT");
+    assert_eq!(payload["subjectCarIdx"], 2);
+    assert_eq!(payload["carIdx"], 2);
+    assert_eq!(payload["onsetSessionTime"], 370.0);
+    assert_eq!(payload["sessionTime"], 390.0);
+    assert_eq!(payload["windowSeconds"], 20.0);
+    assert_eq!(payload["stoppedSeconds"], 11.5);
+    assert_eq!(payload["offTrackSeconds"], 4.25);
+    assert_eq!(payload["leftWorld"], false);
+    assert_eq!(payload["pitted"], true);
+    assert_eq!(payload["wentBackwards"], true);
+    assert_eq!(payload["positionFrom"], 4);
+    assert_eq!(payload["positionTo"], 9);
+    assert_eq!(payload["placesLost"], 5);
+    assert_eq!(payload["classPositionFrom"], 2);
+    assert_eq!(payload["classPositionTo"], 5);
+
+    // The same key the cluster with this id carries.
+    let cluster = RaceEvent::IncidentCluster {
+        lap: 6,
+        session_time: 370.0,
+        session_tick: 9876,
+        incident_id: 12,
+        bucket: 15,
+        lap_dist_pct_from: 0.75,
+        lap_dist_pct_to: 0.80,
+        car_idxs: vec![1, 2],
+        participants: Vec::new(),
+        severity: 2.0,
+        severity_normalized: 0.5,
+        impact_normalized: 0.8,
+        primary_car_idx: Some(1),
+        incident_type: Some("Incident".to_owned()),
+        detected_session_time: 371.0,
+        trigger_car_idx: Some(1),
+        hard_events: Vec::new(),
+        corroboration: Some("multiple_hard_events".to_owned()),
+    };
+    let cluster_json = normalized_event_json(&build_event(
+        &cluster,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+    assert!(payload["incidentKey"]
+        .as_str()
+        .is_some_and(|key| key.ends_with(":incident:12")));
+    assert_eq!(
+        payload["incidentKey"],
+        cluster_json["payload"]["incidentKey"]
+    );
+}
+
+#[test]
+fn incident_outcome_omits_keys_it_has_no_value_for() {
+    // A single-car incident for a car with no position yet.
+    let event = RaceEvent::IncidentOutcome {
+        lap: 2,
+        session_time: 64.5,
+        car_idx: 7,
+        onset_session_time: 60.0,
+        incident_id: None,
+        window_seconds: 4.5,
+        stopped_seconds: 3.0,
+        off_track_seconds: 0.0,
+        left_world: true,
+        pitted: false,
+        went_backwards: false,
+        position_from: None,
+        position_to: None,
+        places_lost: None,
+        class_position_from: None,
+        class_position_to: None,
+    };
+    let json = normalized_event_json(&build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    ));
+
+    assert_envelope_contract(&json, "INCIDENT_OUTCOME");
+    let payload = json["payload"].as_object().unwrap();
+    // Omitted, never null — in either spelling.
+    for key in [
+        "incidentKey",
+        "incidentId",
+        "incident_id",
+        "positionFrom",
+        "position_from",
+        "positionTo",
+        "position_to",
+        "placesLost",
+        "places_lost",
+        "classPositionFrom",
+        "class_position_from",
+        "classPositionTo",
+        "class_position_to",
+    ] {
+        assert!(!payload.contains_key(key), "{key} should be omitted");
+    }
+    // The join key for a single-car incident is the car and the onset.
+    assert_eq!(payload["carIdx"], 7);
+    assert_eq!(payload["onsetSessionTime"], 60.0);
+    // Facts that are always known are always present.
+    assert_eq!(payload["windowSeconds"], 4.5);
+    assert_eq!(payload["stoppedSeconds"], 3.0);
+    assert_eq!(payload["offTrackSeconds"], 0.0);
+    assert_eq!(payload["leftWorld"], true);
+    assert_eq!(payload["pitted"], false);
+    assert_eq!(payload["wentBackwards"], false);
+}
+
+#[test]
+fn incident_outcome_onset_equals_the_alerts_session_time() {
+    // Both are the hard event's own f32 time, so a consumer can join a
+    // single-car outcome to its alert on (car, time) by equality.
+    let onset = 1234.5678_f32;
+    let build = |event: &RaceEvent| {
+        normalized_event_json(&build_event(
+            event,
+            &minimal_frame(),
+            None,
+            "session-abc",
+            "rig-001",
+            None,
+            None,
+        ))
+    };
+    let alert = build(&RaceEvent::IncidentAlert {
+        lap: 6,
+        session_time: onset,
+        car_idx: 2,
+        driver_incident_count: None,
+        previous_track_surface: 3,
+        current_track_surface: 3,
+        previous_speed_mps: 50.0,
+        current_speed_mps: 10.0,
+        speed_drop_mps: 40.0,
+        severity: 0.8,
+        severity_normalized: 0.8,
+        incident_count_delta: None,
+        reason: "speed_drop".to_owned(),
+    });
+    let outcome = build(&RaceEvent::IncidentOutcome {
+        lap: 6,
+        session_time: onset + 20.0,
+        car_idx: 2,
+        onset_session_time: onset,
+        incident_id: None,
+        window_seconds: 20.0,
+        stopped_seconds: 0.0,
+        off_track_seconds: 0.0,
+        left_world: false,
+        pitted: false,
+        went_backwards: false,
+        position_from: Some(3),
+        position_to: Some(3),
+        places_lost: Some(0),
+        class_position_from: None,
+        class_position_to: None,
+    });
+    assert_eq!(
+        outcome["payload"]["onsetSessionTime"],
+        alert["payload"]["sessionTime"]
+    );
+    assert_eq!(outcome["payload"]["carIdx"], alert["payload"]["carIdx"]);
+}
+
+#[test]
 fn incident_resolution_reuses_stable_incident_key() {
     let opened = RaceEvent::IncidentCluster {
         lap: 6,

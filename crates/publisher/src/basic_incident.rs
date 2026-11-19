@@ -30,12 +30,12 @@ const MIN_SURFACE_SEVERITY: f32 = 0.1;
 /// count as an incident. Filters garage/pit-stall jitter.
 const MIN_PREV_SPEED_MPS: f32 = 5.0;
 /// iRacing `irsdk_TrkLoc`: cars not in world (garage, tow) report -1.
-const TRACK_SURFACE_NOT_IN_WORLD: i32 = -1;
+pub(crate) const TRACK_SURFACE_NOT_IN_WORLD: i32 = -1;
 /// iRacing `irsdk_TrkLoc`: 0 means off track.
-const TRACK_SURFACE_OFF_TRACK: i32 = 0;
+pub(crate) const TRACK_SURFACE_OFF_TRACK: i32 = 0;
 /// A car slower than this counts as stationary: incident points gained while
 /// crawling (pit stall, grid, tow) describe no on-track moment.
-const STATIONARY_SPEED_MPS: f32 = 5.0;
+pub(crate) const STATIONARY_SPEED_MPS: f32 = 5.0;
 /// Incident points at which an `incident_count_increase` alert is treated as
 /// maximally severe. iRacing awards 0x/1x/2x/4x per infraction.
 const MAX_INCIDENT_POINTS: f32 = 4.0;

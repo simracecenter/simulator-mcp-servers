@@ -20,6 +20,7 @@ pub mod gap_finder;
 pub mod headless;
 pub mod horizon;
 pub mod incident_cluster;
+pub mod incident_outcome;
 #[cfg(target_os = "windows")]
 mod irsdk;
 #[cfg(target_os = "windows")]
