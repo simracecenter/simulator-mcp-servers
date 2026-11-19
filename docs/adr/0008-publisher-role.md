@@ -171,6 +171,47 @@ Director rejects the batch that contains a `CAR_FINISHED`, and the publisher
 treats that 4xx as terminal and quarantines the batch (see "Durable ingest
 delivery" above), losing the events that shared it.
 
+## Incident facts (2026-11-19 amendment)
+
+Director ranks incidents for replay and needs to know how hard each car hit
+and what became of it. The facts are measured here, at the source, and sent as
+optional keys and one new event. Nothing in this amendment changes a key that
+was already on the wire.
+
+### Cluster facts on `INCIDENT_CLUSTER`
+
+A cluster is corroborated by one or more hard events, and each hard event is
+an `INCIDENT_ALERT` the publisher already sent. The cluster now repeats what
+those alerts measured, so a consumer does not have to find and join them.
+
+| Key | Value |
+| --- | --- |
+| `hardEvents[]` | One entry per corroborating hard event. Already carried `carIdx`, `sessionTime`, `lapDistPct` and `reason`; gains the three keys below. |
+| `hardEvents[].car` | Full car reference, shaped as the entries of `involvedCars`. A car the roster cannot resolve gets the same index-only stub as everywhere else. |
+| `hardEvents[].speedDropMps` | The alert's own `speedDropMps`. |
+| `hardEvents[].severityNormalized` | The alert's own `severityNormalized`, 0 to 1. |
+| `impactNormalized` | 0 to 1: the largest `severityNormalized` in `hardEvents`. `0` when the list is empty. |
+| `corroboration` | `slowed_and_hard_event` or `multiple_hard_events` (unchanged). |
+| `detectedSessionTime` | When the detector fired (unchanged). `onsetSessionTime` / `sessionTime` stay the earliest hard event and the replay seek point. |
+
+**Why `impactNormalized` and not `severityNormalized`.** A cluster already
+sends `severity` (the number of cars involved) and `severityNormalized` (that
+count mapped onto 0 to 1, with a floor of 0.5 for a cluster made of two hard
+events). Every Director already deployed reads `severityNormalized` on a
+cluster and raises the event to `emergency` at 0.5 or more. A hard speed drop
+is 0.5 or more by construction, so putting the impact under that key would
+change what airs on a Director that was never updated, and removing the key
+would change it the other way. Both keys therefore stay exactly as they were,
+meaning how much of the field is caught up, and the violence of the incident
+goes under a new key that changes nothing until a consumer reads it. A contract
+test pins the cluster's `severityNormalized` to the car-count value.
+
+### Payload contract version
+
+`PAYLOAD_CONTRACT_VERSION` stays at `3`, by the rule under "Payload contract
+versioning" above: every key added here is optional for the consumer and no
+existing key changes meaning or shape.
+
 ## References
 
 - [ADR 0003](0003-single-active-simulator-constraint.md)

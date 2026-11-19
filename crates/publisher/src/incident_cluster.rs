@@ -231,6 +231,12 @@ impl IncidentClusterDetector {
             if own_hard_cars.len() >= MIN_HARD_EVENT_CARS {
                 severity_normalized = severity_normalized.max(0.5);
             }
+            // Related events only: those are the ones listed on the cluster.
+            let impact_normalized = related
+                .iter()
+                .map(|ev| ev.severity_normalized)
+                .fold(0.0_f32, f32::max)
+                .clamp(0.0, 1.0);
             let corroboration = if slowed.len() >= MIN_CLUSTER_CARS {
                 Some("slowed_and_hard_event".to_owned())
             } else {
@@ -260,6 +266,7 @@ impl IncidentClusterDetector {
                 participants,
                 severity,
                 severity_normalized,
+                impact_normalized,
                 primary_car_idx: Some(earliest.car_idx),
                 trigger_car_idx: Some(earliest.car_idx),
                 incident_type: Some("Incident".to_owned()),
@@ -271,6 +278,8 @@ impl IncidentClusterDetector {
                         session_time: ev.session_time,
                         lap_dist_pct: ev.lap_dist_pct,
                         reason: ev.reason.clone(),
+                        speed_drop_mps: ev.speed_drop_mps,
+                        severity_normalized: ev.severity_normalized,
                     })
                     .collect(),
                 corroboration,
@@ -381,6 +390,17 @@ mod tests {
             session_tick: 0,
             lap_dist_pct: bucket as f32 / N as f32 + 0.001,
             reason: "speed_drop".to_owned(),
+            speed_drop_mps: 20.0,
+            severity_normalized: 0.6,
+        }
+    }
+
+    /// As `hard`, with the alert's own magnitude.
+    fn hard_with(car_idx: u8, session_time: f32, bucket: u8, severity: f32) -> HardEvent {
+        HardEvent {
+            speed_drop_mps: severity * 50.0,
+            severity_normalized: severity,
+            ..hard(car_idx, session_time, bucket)
         }
     }
 
@@ -651,5 +671,96 @@ mod tests {
         for idx in [1, 8, 9] {
             assert!(car_idxs.contains(&idx));
         }
+    }
+
+    #[test]
+    fn impact_is_the_largest_hard_event_severity_and_events_keep_their_own() {
+        let (registry, mut detector) = slowed_registry();
+        let events = detector.update(
+            &registry,
+            N,
+            1,
+            4.0,
+            4,
+            false,
+            &deque(vec![
+                hard_with(1, 3.5, CLUSTER_BUCKET, 0.55),
+                hard_with(8, 3.8, CLUSTER_BUCKET, 0.9),
+                hard_with(9, 3.9, CLUSTER_BUCKET + 1, 0.2),
+            ]),
+        );
+        let [RaceEvent::IncidentCluster {
+            impact_normalized,
+            hard_events,
+            ..
+        }] = events.as_slice()
+        else {
+            panic!("expected a single cluster, got {events:?}");
+        };
+        assert_eq!(*impact_normalized, 0.9);
+        let by_car = |idx: u8| hard_events.iter().find(|ev| ev.car_idx == idx).unwrap();
+        assert_eq!(by_car(1).severity_normalized, 0.55);
+        assert_eq!(by_car(8).severity_normalized, 0.9);
+        assert_eq!(by_car(8).speed_drop_mps, 45.0);
+        assert_eq!(by_car(9).severity_normalized, 0.2);
+    }
+
+    #[test]
+    fn impact_ignores_hard_events_that_did_not_corroborate_the_cluster() {
+        let (registry, mut detector) = slowed_registry();
+        // The harder hit is two buckets away and too old: it is not listed on
+        // the cluster, so it must not set the cluster's impact either.
+        let events = detector.update(
+            &registry,
+            N,
+            1,
+            4.0,
+            4,
+            false,
+            &deque(vec![
+                hard_with(1, 3.9, CLUSTER_BUCKET, 0.3),
+                hard_with(8, 3.9, CLUSTER_BUCKET + 2, 1.0),
+                hard_with(9, 0.5, CLUSTER_BUCKET, 1.0),
+            ]),
+        );
+        let [RaceEvent::IncidentCluster {
+            impact_normalized,
+            hard_events,
+            ..
+        }] = events.as_slice()
+        else {
+            panic!("expected a single cluster, got {events:?}");
+        };
+        assert_eq!(hard_events.len(), 1);
+        assert_eq!(*impact_normalized, 0.3);
+    }
+
+    #[test]
+    fn car_count_severity_is_unchanged_by_how_hard_the_cars_hit() {
+        // `severity_normalized` is what deployed consumers escalate on; a
+        // violent three-car slowdown must score exactly as a gentle one.
+        let score = |severity: f32| {
+            let (registry, mut detector) = slowed_registry();
+            let events = detector.update(
+                &registry,
+                N,
+                1,
+                4.0,
+                4,
+                false,
+                &deque(vec![hard_with(1, 3.9, CLUSTER_BUCKET, severity)]),
+            );
+            let [RaceEvent::IncidentCluster {
+                severity,
+                severity_normalized,
+                ..
+            }] = events.as_slice()
+            else {
+                panic!("expected a single cluster, got {events:?}");
+            };
+            (*severity, *severity_normalized)
+        };
+        assert_eq!(score(0.1), score(1.0));
+        assert_eq!(score(1.0), (3.0, 1.0 / 6.0));
     }
 }

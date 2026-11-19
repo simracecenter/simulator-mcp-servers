@@ -1316,13 +1316,17 @@ mod tests {
 
         // A cluster now needs a corroborating hard event in (or one bucket
         // downstream of) the slowed bucket, within the last 3 s.
-        engine.basic_incident.push_hard_event_for_test(
-            1,
-            frame.session_time - 0.5,
-            frame.session_tick,
-            0.500,
-            "speed_drop",
-        );
+        engine
+            .basic_incident
+            .push_hard_event_for_test(crate::basic_incident::HardEvent {
+                car_idx: 1,
+                session_time: frame.session_time - 0.5,
+                session_tick: frame.session_tick,
+                lap_dist_pct: 0.500,
+                reason: "speed_drop".to_owned(),
+                speed_drop_mps: 20.0,
+                severity_normalized: 0.6,
+            });
         let evaluated = engine.process_frame_with_incident_cadence(&frame, true);
         assert!(evaluated
             .iter()

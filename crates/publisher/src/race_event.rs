@@ -15,6 +15,10 @@ pub struct IncidentHardEvent {
     pub session_time: f32,
     pub lap_dist_pct: f32,
     pub reason: String,
+    /// `speed_drop_mps` of the alert this hard event was.
+    pub speed_drop_mps: f32,
+    /// `severity_normalized` of the alert this hard event was, 0.0–1.0.
+    pub severity_normalized: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -592,8 +596,17 @@ pub enum RaceEvent {
         lap_dist_pct_to: f32,
         car_idxs: Vec<u8>,
         participants: Vec<IncidentParticipant>,
+        /// How many cars are involved, raw. On the wire since contract
+        /// revision 2; kept unchanged for consumers already deployed.
         severity: f32,
+        /// The car count mapped onto 0.0–1.0 — a measure of how much of the
+        /// field is caught up, not of how hard anyone hit. Deployed consumers
+        /// escalate on it, so its meaning must not change: the violence of
+        /// the incident is `impact_normalized`.
         severity_normalized: f32,
+        /// Largest `severity_normalized` among `hard_events`, 0.0–1.0: how
+        /// hard the hardest hit was.
+        impact_normalized: f32,
         /// Most-culpable / dominant car in the incident — the car of the
         /// earliest corroborating hard event.
         primary_car_idx: Option<u8>,
