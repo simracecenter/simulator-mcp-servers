@@ -103,9 +103,27 @@ pub fn init_file_log(path: &Path, max_bytes: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// Emit `msg` to stderr always, and to the file sink when initialised.
+/// Where the host process wants the publisher's log lines, as `(level, msg)`.
+pub type LogHook = fn(&str, &str);
+
+static HOOK: OnceLock<LogHook> = OnceLock::new();
+
+/// Send every log line to the host's own logger as well. The launcher runs
+/// the publisher inside a windowed process whose stderr goes nowhere, so
+/// without a hook nothing the pipeline logs can be read after a session.
+/// First install wins.
+pub fn set_log_hook(hook: LogHook) {
+    let _ = HOOK.set(hook);
+}
+
+/// Emit `msg` to the host's log hook when one is installed, otherwise to
+/// stderr; and to the file sink when initialised.
 pub fn log_line(level: &str, msg: &str) {
-    eprintln!("{msg}");
+    match HOOK.get() {
+        // The hook's logger already mirrors to stderr.
+        Some(hook) => hook(level, msg),
+        None => eprintln!("{msg}"),
+    }
     if let Some(sink) = SINK.get() {
         if let Ok(mut s) = sink.lock() {
             let line = format!("{} {:<5} {}\n", iso8601_utc(SystemTime::now()), level, msg);

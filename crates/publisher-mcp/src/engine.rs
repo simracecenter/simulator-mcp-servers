@@ -229,6 +229,7 @@ impl PublisherEngine for InProcessEngine {
         let (controls_tx, controls_rx) = std::sync::mpsc::channel();
         let thread_running = Arc::clone(&running);
         let thread_status = Arc::clone(&status);
+        publisher::headless::set_log_hook(forward_publisher_log);
         let handle = std::thread::Builder::new()
             .name("publisher-engine".to_string())
             .spawn(move || {
@@ -316,6 +317,17 @@ impl PublisherEngine for UnsupportedEngine {
 
     fn snapshot(&self) -> EngineSnapshot {
         EngineSnapshot::default()
+    }
+}
+
+/// Put the publisher pipeline's log lines into this process's log, which the
+/// launcher writes to its rotated file. Without it they reach only stderr.
+#[cfg(windows)]
+fn forward_publisher_log(level: &str, msg: &str) {
+    match level {
+        "WARN" => tracing::warn!(target: "publisher", "{msg}"),
+        "ERROR" => tracing::error!(target: "publisher", "{msg}"),
+        _ => tracing::info!(target: "publisher", "{msg}"),
     }
 }
 
