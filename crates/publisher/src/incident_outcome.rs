@@ -25,6 +25,20 @@ const BACKWARDS_MIN_M: f32 = 5.0;
 /// A drop in lap distance larger than this is the start/finish wrap (or a
 /// teleport), not a car reversing.
 const WRAP_DELTA_PCT: f32 = 0.5;
+/// The lowest speed is looked for this long after the first hard event. The
+/// alert fires on the frame the drop crosses its threshold; the bottom of the
+/// drop comes within a few seconds.
+pub const PEAK_LOSS_WINDOW_S: f32 = 3.0;
+/// Below this speed before the hard event there is nothing to lose: no peak
+/// loss is reported.
+const MIN_PEAK_SPEED_MPS: f32 = 1.0;
+
+/// `irsdk_Flags` bits of `CarIdxSessionFlags` read into the outcome, as named
+/// in the SDK's `irsdk_defines.h` and seen on a live race (ADR 0008, "Probe
+/// findings").
+pub const FLAG_BLACK: u32 = 0x0001_0000;
+pub const FLAG_DISQUALIFY: u32 = 0x0002_0000;
+pub const FLAG_REPAIR: u32 = 0x0010_0000;
 
 /// What the tracker reads about one car at one moment. Built by the caller so
 /// the tracker needs neither the registry nor the frame.
@@ -40,6 +54,9 @@ pub struct CarSample {
     pub position: Option<u8>,
     /// Position in class, `None` when the SDK has no value.
     pub class_position: Option<u8>,
+    /// `CarIdxSessionFlags` of the car, `None` when the SDK does not expose
+    /// the variable.
+    pub session_flags: Option<u32>,
 }
 
 struct Watch {
@@ -60,6 +77,18 @@ struct Watch {
     off_track_s: f32,
     backwards_pct: f32,
     pitted: bool,
+    /// Speed before the first hard event, from the detector.
+    peak_speed_mps: f32,
+    /// Lowest speed seen in the first `PEAK_LOSS_WINDOW_S`, in the world and
+    /// off pit road. Starts at the speed on the onset frame.
+    lowest_speed_mps: Option<f32>,
+    /// The car left the world inside `PEAK_LOSS_WINDOW_S`.
+    gone_early: bool,
+    /// Every flag bit seen at any sample, `None` when the SDK never gave
+    /// the variable.
+    flags_seen: Option<u32>,
+    /// Flags on the onset frame.
+    flags_at_onset: Option<u32>,
 }
 
 pub struct IncidentOutcomeTracker {
@@ -133,6 +162,11 @@ impl IncidentOutcomeTracker {
                 off_track_s: 0.0,
                 backwards_pct: 0.0,
                 pitted: false,
+                peak_speed_mps: ev.peak_speed_mps,
+                lowest_speed_mps: Some(car.speed_mps),
+                gone_early: false,
+                flags_seen: car.session_flags,
+                flags_at_onset: car.session_flags,
             });
         }
     }
@@ -168,14 +202,26 @@ impl IncidentOutcomeTracker {
             // reporting "not in world".
             let car =
                 sample(watch.car_idx).filter(|car| car.track_surface > TRACK_SURFACE_NOT_IN_WORLD);
+            let in_peak_window = session_time - watch.onset_session_time <= PEAK_LOSS_WINDOW_S;
             let Some(car) = car else {
+                watch.gone_early = in_peak_window;
                 events.push(watch.outcome(lap, session_time, now, true, track_length_m));
                 return false;
             };
 
+            if let Some(flags) = car.session_flags {
+                watch.flags_seen = Some(watch.flags_seen.unwrap_or(0) | flags);
+            }
             if car.on_pit_road {
                 watch.pitted = true;
             } else {
+                if in_peak_window {
+                    watch.lowest_speed_mps = Some(
+                        watch
+                            .lowest_speed_mps
+                            .map_or(car.speed_mps, |lowest| lowest.min(car.speed_mps)),
+                    );
+                }
                 if car.speed_mps < STATIONARY_SPEED_MPS {
                     watch.stopped_s += dt;
                 }
@@ -228,6 +274,8 @@ impl Watch {
         let positions = self
             .position_from
             .map(|from| (from, self.position_last.unwrap_or(from)));
+        let (peak_speed_loss_normalized, lowest_speed_mps) = self.peak_loss();
+        let flag = |bit: u32| self.flags_seen.map(|flags| flags & bit != 0);
         RaceEvent::IncidentOutcome {
             lap,
             session_time,
@@ -245,7 +293,31 @@ impl Watch {
             places_lost: positions.map(|(from, to)| to.saturating_sub(from)),
             class_position_from: self.class_position_from,
             class_position_to: self.class_position_last,
+            peak_speed_loss_normalized,
+            lowest_speed_mps,
+            repair_flag: flag(FLAG_REPAIR),
+            black_flag: flag(FLAG_BLACK),
+            black_flag_at_onset: self.flags_at_onset.map(|flags| flags & FLAG_BLACK != 0),
+            disqualified: flag(FLAG_DISQUALIFY),
         }
+    }
+
+    /// `(peak_speed_loss_normalized, lowest_speed_mps)`. A car that left the
+    /// world inside the window lost everything; a car with no speed before
+    /// the hard event has no loss to report.
+    fn peak_loss(&self) -> (Option<f32>, Option<f32>) {
+        if self.peak_speed_mps < MIN_PEAK_SPEED_MPS {
+            return (None, None);
+        }
+        if self.gone_early {
+            return (Some(1.0), Some(0.0));
+        }
+        let Some(lowest) = self.lowest_speed_mps else {
+            return (None, None);
+        };
+        let lowest = lowest.max(0.0);
+        let loss = ((self.peak_speed_mps - lowest) / self.peak_speed_mps).clamp(0.0, 1.0);
+        (Some(loss), Some(lowest))
     }
 }
 
@@ -264,6 +336,9 @@ mod tests {
 
     const TRACK_M: f32 = 5000.0;
     const CAR: u8 = 7;
+    /// Speed before every hard event the tests raise.
+    const PEAK_MPS: f32 = 60.0;
+    const SERVICIBLE: u32 = 0x0004_0000;
 
     /// A small world the tests move by hand: the cars' current state, the
     /// clock, and the hard events raised so far.
@@ -272,6 +347,8 @@ mod tests {
         hard_events: VecDeque<HardEvent>,
         tracker: IncidentOutcomeTracker,
         tick: i64,
+        /// Speed before the next hard event raised.
+        peak: f32,
     }
 
     fn racing(position: u8) -> CarSample {
@@ -282,6 +359,7 @@ mod tests {
             lap_dist_pct: 0.40,
             position: Some(position),
             class_position: Some(position),
+            session_flags: None,
         }
     }
 
@@ -292,6 +370,7 @@ mod tests {
                 hard_events: VecDeque::new(),
                 tracker: IncidentOutcomeTracker::new(),
                 tick: 0,
+                peak: PEAK_MPS,
             }
         }
 
@@ -315,6 +394,7 @@ mod tests {
                 reason: "speed_drop".to_owned(),
                 speed_drop_mps: 30.0,
                 severity_normalized: 0.7,
+                peak_speed_mps: self.peak,
             });
             let cars = &self.cars;
             self.tracker
@@ -707,6 +787,165 @@ mod tests {
         assert!(world.cadence(2.0).is_empty());
         assert_eq!(world.tracker.open_watches(), 0);
         assert!(world.run(2.0, 130.0).is_empty());
+    }
+
+    /// The P-3 and P-5 facts of the single outcome in `events`.
+    #[derive(Debug, PartialEq)]
+    struct Facts {
+        peak_loss: Option<f32>,
+        lowest: Option<f32>,
+        repair: Option<bool>,
+        black: Option<bool>,
+        black_at_onset: Option<bool>,
+        disqualified: Option<bool>,
+    }
+
+    fn only_facts(events: &[RaceEvent]) -> Facts {
+        let [RaceEvent::IncidentOutcome {
+            peak_speed_loss_normalized,
+            lowest_speed_mps,
+            repair_flag,
+            black_flag,
+            black_flag_at_onset,
+            disqualified,
+            ..
+        }] = events
+        else {
+            panic!("expected exactly one outcome, got {events:?}");
+        };
+        Facts {
+            peak_loss: *peak_speed_loss_normalized,
+            lowest: *lowest_speed_mps,
+            repair: *repair_flag,
+            black: *black_flag,
+            black_at_onset: *black_flag_at_onset,
+            disqualified: *disqualified,
+        }
+    }
+
+    #[test]
+    fn a_lift_reports_the_share_of_speed_really_lost() {
+        let mut world = World::new();
+        world.hard_event(CAR, 100.0);
+        // Bottoms out at 60% of the 60 m/s peak, then drives on.
+        world.set(CAR, |car| car.speed_mps = 36.0);
+        world.run(100.0, 102.0);
+        world.set(CAR, |car| car.speed_mps = 50.0);
+        let facts = only_facts(&world.run(102.0, 120.0));
+        assert!(close(facts.peak_loss.unwrap(), 0.4), "got {facts:?}");
+        assert!(close(facts.lowest.unwrap(), 36.0));
+    }
+
+    #[test]
+    fn a_crash_to_a_stop_loses_everything() {
+        let mut world = World::new();
+        world.hard_event(CAR, 100.0);
+        world.set(CAR, |car| car.speed_mps = 0.0);
+        let facts = only_facts(&world.run(100.0, 120.0));
+        assert_eq!(facts.peak_loss, Some(1.0));
+        assert_eq!(facts.lowest, Some(0.0));
+    }
+
+    #[test]
+    fn speed_after_the_peak_loss_window_does_not_count() {
+        let mut world = World::new();
+        // 50 m/s on the onset frame and for the first 3 s.
+        world.hard_event(CAR, 100.0);
+        world.run(100.0, 104.0);
+        // Parked later in the window: that is the stopped time, not the hit.
+        world.set(CAR, |car| car.speed_mps = 0.0);
+        let facts = only_facts(&world.run(104.0, 120.0));
+        assert!(close(facts.peak_loss.unwrap(), 10.0 / 60.0), "got {facts:?}");
+        assert!(close(facts.lowest.unwrap(), 50.0));
+    }
+
+    #[test]
+    fn a_tow_inside_the_peak_loss_window_loses_everything() {
+        let mut world = World::new();
+        world.hard_event(CAR, 100.0);
+        world.run(100.0, 101.0);
+        world.set(CAR, |car| car.track_surface = TRACK_SURFACE_NOT_IN_WORLD);
+        let events = world.cadence(101.25);
+        assert!(only_outcome(&events).left_world);
+        let facts = only_facts(&events);
+        assert_eq!(facts.peak_loss, Some(1.0));
+        assert_eq!(facts.lowest, Some(0.0));
+    }
+
+    #[test]
+    fn a_tow_after_the_peak_loss_window_keeps_the_measured_loss() {
+        let mut world = World::new();
+        world.hard_event(CAR, 100.0);
+        world.run(100.0, 110.0);
+        world.set(CAR, |car| car.track_surface = TRACK_SURFACE_NOT_IN_WORLD);
+        let facts = only_facts(&world.cadence(110.25));
+        assert!(close(facts.peak_loss.unwrap(), 10.0 / 60.0), "got {facts:?}");
+    }
+
+    #[test]
+    fn no_peak_loss_without_speed_before_the_hard_event() {
+        let mut world = World::new();
+        world.peak = 0.5;
+        world.hard_event(CAR, 100.0);
+        let facts = only_facts(&world.run(100.0, 120.0));
+        assert_eq!((facts.peak_loss, facts.lowest), (None, None));
+    }
+
+    #[test]
+    fn flag_keys_are_absent_when_the_sdk_has_no_per_car_flags() {
+        let mut world = World::new();
+        world.hard_event(CAR, 100.0);
+        let facts = only_facts(&world.run(100.0, 120.0));
+        assert_eq!(
+            (
+                facts.repair,
+                facts.black,
+                facts.black_at_onset,
+                facts.disqualified
+            ),
+            (None, None, None, None)
+        );
+    }
+
+    #[test]
+    fn a_repair_flag_raised_mid_window_is_reported() {
+        let mut world = World::new();
+        world.set(CAR, |car| car.session_flags = Some(SERVICIBLE));
+        world.hard_event(CAR, 100.0);
+        world.run(100.0, 105.0);
+        // As seen live: servicible + black + repair, the meatball.
+        world.set(CAR, |car| car.session_flags = Some(0x0015_0000));
+        world.run(105.0, 110.0);
+        world.set(CAR, |car| car.session_flags = Some(SERVICIBLE));
+        let facts = only_facts(&world.run(110.0, 120.0));
+        assert_eq!(facts.repair, Some(true));
+        assert_eq!(facts.black, Some(true));
+        assert_eq!(facts.black_at_onset, Some(false), "raised after the hit");
+        assert_eq!(facts.disqualified, Some(false));
+    }
+
+    #[test]
+    fn a_black_flag_already_set_at_the_hard_event_marks_a_penalty() {
+        let mut world = World::new();
+        world.set(CAR, |car| car.session_flags = Some(SERVICIBLE | FLAG_BLACK));
+        world.hard_event(CAR, 100.0);
+        world.set(CAR, |car| car.session_flags = Some(SERVICIBLE));
+        let facts = only_facts(&world.run(100.0, 120.0));
+        assert_eq!(facts.black_at_onset, Some(true));
+        assert_eq!(facts.black, Some(true));
+        assert_eq!(facts.repair, Some(false));
+    }
+
+    #[test]
+    fn a_disqualification_in_the_window_is_reported() {
+        let mut world = World::new();
+        world.set(CAR, |car| car.session_flags = Some(SERVICIBLE));
+        world.hard_event(CAR, 100.0);
+        world.run(100.0, 104.0);
+        world.set(CAR, |car| car.session_flags = Some(0x0006_0000));
+        let facts = only_facts(&world.run(104.0, 120.0));
+        assert_eq!(facts.disqualified, Some(true));
+        assert_eq!(facts.black, Some(false));
     }
 
     #[test]

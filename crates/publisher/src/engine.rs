@@ -1194,6 +1194,7 @@ fn outcome_sample(
             .copied()
             .filter(|position| *position > 0),
         class_position: frame.class_position_of(car_idx),
+        session_flags: frame.session_flags_of(car_idx),
     })
 }
 
@@ -1268,6 +1269,7 @@ mod tests {
             player_team_incident_count: None,
             player_car_class_position: 0,
             car_idx_class_position: vec![],
+            car_idx_session_flags: vec![],
             car_idx_lap_completed: vec![lap as i32, lap as i32],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,
@@ -1305,6 +1307,7 @@ mod tests {
             player_team_incident_count: None,
             player_car_class_position: 0,
             car_idx_class_position: vec![],
+            car_idx_session_flags: vec![],
             car_idx_lap_completed: vec![lap as i32, lap as i32],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,
@@ -1380,6 +1383,7 @@ mod tests {
                 reason: "speed_drop".to_owned(),
                 speed_drop_mps: 20.0,
                 severity_normalized: 0.6,
+                peak_speed_mps: 40.0,
             });
         let evaluated = engine.process_frame_with_incident_cadence(&frame, true);
         assert!(evaluated

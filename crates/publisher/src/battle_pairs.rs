@@ -471,6 +471,7 @@ mod tests {
             player_team_incident_count: None,
             player_car_class_position: 0,
             car_idx_class_position: vec![],
+            car_idx_session_flags: vec![],
             car_idx_lap_completed: vec![3; n],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,

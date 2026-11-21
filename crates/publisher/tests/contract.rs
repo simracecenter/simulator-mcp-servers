@@ -37,6 +37,7 @@ fn minimal_frame() -> TelemetryFrame {
         player_team_incident_count: None,
         player_car_class_position: 0,
         car_idx_class_position: vec![],
+        car_idx_session_flags: vec![],
         car_idx_lap_completed: vec![3, 3],
         lf_temp_m: 0.0,
         rf_temp_m: 0.0,
@@ -1031,6 +1032,12 @@ fn incident_outcome_carries_the_cars_fate_and_the_cluster_key() {
         places_lost: Some(5),
         class_position_from: Some(2),
         class_position_to: Some(5),
+        peak_speed_loss_normalized: Some(0.75),
+        lowest_speed_mps: Some(12.5),
+        repair_flag: Some(true),
+        black_flag: Some(true),
+        black_flag_at_onset: Some(false),
+        disqualified: Some(false),
     };
     let json = normalized_event_json(&build_event(
         &event,
@@ -1066,6 +1073,16 @@ fn incident_outcome_carries_the_cars_fate_and_the_cluster_key() {
     assert_eq!(payload["placesLost"], 5);
     assert_eq!(payload["classPositionFrom"], 2);
     assert_eq!(payload["classPositionTo"], 5);
+    // Peak speed loss (P-5) and per-car flags (P-3), in both spellings.
+    assert_eq!(payload["peakSpeedLossNormalized"], 0.75);
+    assert_eq!(payload["peak_speed_loss_normalized"], 0.75);
+    assert_eq!(payload["lowestSpeedMps"], 12.5);
+    assert_eq!(payload["repairFlag"], true);
+    assert_eq!(payload["repair_flag"], true);
+    assert_eq!(payload["blackFlag"], true);
+    assert_eq!(payload["blackFlagAtOnset"], false);
+    assert_eq!(payload["black_flag_at_onset"], false);
+    assert_eq!(payload["disqualified"], false);
 
     // The same key the cluster with this id carries.
     let cluster = RaceEvent::IncidentCluster {
@@ -1126,6 +1143,12 @@ fn incident_outcome_omits_keys_it_has_no_value_for() {
         places_lost: None,
         class_position_from: None,
         class_position_to: None,
+        peak_speed_loss_normalized: None,
+        lowest_speed_mps: None,
+        repair_flag: None,
+        black_flag: None,
+        black_flag_at_onset: None,
+        disqualified: None,
     };
     let json = normalized_event_json(&build_event(
         &event,
@@ -1154,6 +1177,17 @@ fn incident_outcome_omits_keys_it_has_no_value_for() {
         "class_position_from",
         "classPositionTo",
         "class_position_to",
+        "peakSpeedLossNormalized",
+        "peak_speed_loss_normalized",
+        "lowestSpeedMps",
+        "lowest_speed_mps",
+        "repairFlag",
+        "repair_flag",
+        "blackFlag",
+        "black_flag",
+        "blackFlagAtOnset",
+        "black_flag_at_onset",
+        "disqualified",
     ] {
         assert!(!payload.contains_key(key), "{key} should be omitted");
     }
@@ -1217,6 +1251,12 @@ fn incident_outcome_onset_equals_the_alerts_session_time() {
         places_lost: Some(0),
         class_position_from: None,
         class_position_to: None,
+        peak_speed_loss_normalized: None,
+        lowest_speed_mps: None,
+        repair_flag: None,
+        black_flag: None,
+        black_flag_at_onset: None,
+        disqualified: None,
     });
     assert_eq!(
         outcome["payload"]["onsetSessionTime"],

@@ -23,6 +23,12 @@ pub struct TelemetryFrame {
     /// Indexed by car_idx.
     #[serde(default)]
     pub car_idx_track_surface: Vec<i32>,
+    /// `CarIdxSessionFlags` (`irsdk_Flags` bits) per car, indexed by car_idx.
+    /// iRacing fills it for every car, not only the rig's (ADR 0008, "Probe
+    /// findings"). Empty when the SDK does not expose the variable (and in
+    /// JSONL fixtures).
+    #[serde(default)]
+    pub car_idx_session_flags: Vec<u32>,
     /// Elapsed time of the last completed lap in seconds. 0.0 until lap 1 is done.
     /// Used for anchor-count bootstrap only; absent from JSONL fixtures (defaults to 0.0).
     #[serde(default)]
@@ -103,6 +109,12 @@ pub struct TelemetryFrame {
 }
 
 impl TelemetryFrame {
+    /// `CarIdxSessionFlags` of `car_idx`, or `None` when the SDK does not
+    /// provide the variable or the slot is out of range.
+    pub fn session_flags_of(&self, car_idx: u8) -> Option<u32> {
+        self.car_idx_session_flags.get(car_idx as usize).copied()
+    }
+
     /// Position of `car_idx` within its class, or `None` when the SDK does not
     /// provide one (variable absent, slot out of range, or car unclassified).
     pub fn class_position_of(&self, car_idx: u8) -> Option<u8> {
