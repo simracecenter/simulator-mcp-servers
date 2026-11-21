@@ -357,8 +357,37 @@ The measure has to come from the outcome window, which already watches the car
 for 20 s (P-5 in Director's docs/26).
 
 The `placesLost` limit above is now settled. Per-car flags (P-3) and the peak
-speed loss (P-5) are the next payload changes. Surface material and incident
-totals stay unused until a use is shown.
+speed loss (P-5) follow below. Surface material and incident totals stay unused
+until a use is shown.
+
+### Per-car flags and peak speed loss on `INCIDENT_OUTCOME` (v0.8.18)
+
+These follow from the findings above. Every key is optional and omitted when
+there is no value.
+
+| Key | Value |
+| --- | --- |
+| `peakSpeedLossNormalized` | 0 to 1: `(peak − lowest) / peak`. The peak is the alert's `previous_speed_mps`, the speed before the drop. The lowest is the lowest speed in the first 3 s after the first hard event, in the world and off pit road, starting from the onset frame. 1.0 when the car left the world inside those 3 s. Omitted when the car was doing under 1 m/s before the hard event. |
+| `lowestSpeedMps` | That lowest speed. 0 when the car left the world inside the 3 s. Omitted with the key above. |
+| `repairFlag` | The repair bit (`0x00100000`) was set at any sample in the window. |
+| `blackFlag` | The black bit (`0x00010000`) was set at any sample in the window. |
+| `blackFlagAtOnset` | The black bit was already set on the hard event's frame: a car slowing to serve a penalty. |
+| `disqualified` | The disqualify bit (`0x00020000`) was set at any sample in the window. |
+
+The four flag keys are omitted when the SDK does not expose
+`CarIdxSessionFlags`. The frame now carries the variable as
+`car_idx_session_flags`, read when its type is bitfield or int.
+
+**Why the outcome and not the alert.** The alert has to go out on the frame the
+drop crosses its threshold, or the replay seek point is lost. So its
+`severityNormalized` stays the value at the threshold, and the cluster's
+`impactNormalized` stays the largest of those. A consumer that wants the size
+of the hit reads `peakSpeedLossNormalized` when the outcome arrives. The 3 s
+window ends long before the outcome's 20 s, so the key costs no delay.
+
+**Limits.** For every car but the rig's, speed is derived from lap distance, as
+for `stoppedSeconds`. A car that spins on the spot therefore reads as a full
+loss, even when it drives away undamaged.
 
 ### Payload contract version
 
