@@ -17,7 +17,7 @@ use crate::fuel_projection::FuelProjection;
 use crate::gap_finder::{find_cars_ahead, find_cars_behind};
 use crate::horizon::HorizonDetector;
 use crate::incident_cluster::IncidentClusterDetector;
-use crate::incident_outcome::{CarSample, FLAG_BLACK, IncidentOutcomeTracker};
+use crate::incident_outcome::{CarSample, IncidentOutcomeTracker, FLAG_BLACK};
 use crate::lap_timer::LapTimer;
 use crate::lift_coast::LiftCoastDetector;
 use crate::micro_sector::MicroSectorTracker;
