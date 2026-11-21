@@ -258,11 +258,9 @@ entry in the cluster's `hardEvents`.
 - The same derivation makes `wentBackwards` blind across the start/finish
   line: a fall in lap distance of more than half a lap is taken to be the
   line, not a car reversing.
-- `positionTo` and `placesLost` are only as fresh as iRacing's positions. If
-  iRacing moves `CarIdxPosition` only when cars cross a timing line, a car
-  that stops on a long lap can still show its old position 20 s later, and
-  `placesLost` under-reports. The probe below exists to measure this; until it
-  has, treat `placesLost` as a lower bound.
+- `positionTo` and `placesLost` are only as fresh as iRacing's positions, and
+  the probe showed they are usually stale 20 s after an incident (see "Probe
+  findings" below). Treat `placesLost` as a lower bound.
 - Samples are taken on the incident cadence (250 ms by default), so the
   durations are accurate to about that.
 
@@ -296,10 +294,71 @@ missing, of another type or out of bounds reads as absent and cannot cost a
 frame.
 
 The probe has to be run in an official race: other drivers' incident counts
-may be hidden there and visible in a test session. Its findings are to be
-written into this amendment; the `placesLost` limit above, per-car flags on
-`INCIDENT_OUTCOME` and any use of surface material or incident totals wait on
-them.
+may be hidden there and visible in a test session. Its findings are below.
+
+### Probe findings (2026-11-21)
+
+One official IMSA race weekend on the Rig with launcher v0.8.17 and
+`SRC_PUBLISHER_PROBE=1`: qualifying and two races of 38 cars (Director run
+`run-1795268965`). Since v0.8.17 the probe's lines are in the launcher log.
+The probe took 967 samples at 327 hard events, of which 313 have all three
+samples.
+
+**The variables.** All five are in the SDK header on every connect:
+`CarIdxSessionFlags` (bitfield, 72), `CarIdxTrackSurfaceMaterial` (int, 72),
+and `LatAccel`, `LongAccel`, `VertAccel` (float, 1).
+
+**`CarIdxSessionFlags` is filled for every car**, not only the rig's. The bit
+names below are those of `irsdk_Flags` in `irsdk_defines.h`; P-3 takes the
+values from the header, not from this table.
+
+| Value seen | Bits | Where |
+| --- | --- | --- |
+| `0x00040000` | servicible | The normal state: 275 of 327 events hold it at all three samples |
+| `0x00050000` | servicible, black | 12 events, already set at the hard event: a car serving a penalty, not a car that crashed |
+| `0x000c0000` | servicible, furled | Set at the hard event in 5 events, and raised 5 to 20 s after it in 12 more: the warning flag |
+| `0x00150000` | servicible, black, repair | One car, set 5 to 20 s after a speed drop: the meatball |
+| `0x00060000` | servicible, disqualify | One car, in the same second as `ReasonOut` `DQ` appeared in the session results |
+| `0x00000000` | none | 6 samples, at 5 or 20 s: the car had left |
+
+So P-3 goes ahead, with three bits rather than two: `repairFlag`,
+`blackFlag` and `disqualified`. A black flag that is already set when the hard
+event fires marks a penalty slowdown, and the outcome should say so
+(`blackFlagAtOnset`), because such a car slows on purpose.
+
+**`CarIdxTrackSurfaceMaterial` is filled for other cars.** At the hard event:
+asphalt 201, grass 76, gravel 22, painted lines 16, rumble strips 6, dirt 3,
+concrete 3. At 5 s and 20 s, about a quarter of the cars read −1 (not in the
+world: towed or reset). Grass and gravel can therefore be told apart from a
+paved run-off. No package uses it yet.
+
+**Other cars' incident totals are hidden during an official race.**
+`ResultsPositions` listed every car with `Incidents` 0 from the green flag to
+the checkered flag of race 1. At the checkered flag all 38 cars changed at once
+(323 points in total). Qualifying totals appeared only when qualifying ended.
+`ReasonOut` is live: the disqualification above appeared at once. So incident
+points cannot score other cars' incidents while a race runs. The rig car's own
+count (`incident_count_increase`, 19 alerts) remains the only live source.
+
+**`CarIdxPosition` is usually stale 20 s after an incident.** It had changed at
+5 s in 18 of 313 events and at 20 s in 88. The data cannot tell whether
+positions move only at timing lines or simply move slowly. Either way the
+20-second window sees only part of the places lost. `placesLost` stays a lower
+bound. The window is not lengthened, because the outcome would arrive too late
+to rank a replay.
+
+**Impact is measured at the threshold, not at the bottom of the drop.** Not a
+probe question, but the same race shows it. A `speed_drop` alert fires on the
+first frame where speed falls to `HARD_DROP_RATIO` (0.5) of the recent peak, so
+its `severityNormalized` is about 0.5 by construction: 150 of 326 alerts read
+0.50, and 34 read 0.51. Clusters inherit it: 112 of 151 have
+`impactNormalized` 0.5. The value does not separate a hard crash from a lift.
+The measure has to come from the outcome window, which already watches the car
+for 20 s (P-5 in Director's docs/26).
+
+The `placesLost` limit above is now settled. Per-car flags (P-3) and the peak
+speed loss (P-5) are the next payload changes. Surface material and incident
+totals stay unused until a use is shown.
 
 ### Payload contract version
 
