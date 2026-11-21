@@ -240,6 +240,7 @@ impl BasicIncidentDetector {
                         severity_normalized,
                         incident_count_delta: None,
                         reason: reason.clone(),
+                        black_flag: None,
                     });
                     self.recent_hard_events.push_back(HardEvent {
                         car_idx: car.car_idx,
@@ -308,6 +309,7 @@ impl BasicIncidentDetector {
                         severity_normalized,
                         incident_count_delta: Some(player_incident_count - previous_count),
                         reason: "incident_count_increase".to_owned(),
+                        black_flag: None,
                     });
                 }
             }

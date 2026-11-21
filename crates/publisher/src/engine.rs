@@ -17,7 +17,7 @@ use crate::fuel_projection::FuelProjection;
 use crate::gap_finder::{find_cars_ahead, find_cars_behind};
 use crate::horizon::HorizonDetector;
 use crate::incident_cluster::IncidentClusterDetector;
-use crate::incident_outcome::{CarSample, IncidentOutcomeTracker};
+use crate::incident_outcome::{CarSample, FLAG_BLACK, IncidentOutcomeTracker};
 use crate::lap_timer::LapTimer;
 use crate::lift_coast::LiftCoastDetector;
 use crate::micro_sector::MicroSectorTracker;
@@ -337,14 +337,29 @@ impl NarrativeEngine {
             self.anchor_count,
             self.track_length_m,
         );
-        events.extend(self.basic_incident.update(
+        let mut alerts = self.basic_incident.update(
             &self.car_registry,
             frame.lap,
             frame.session_time,
             frame.session_tick,
             frame.player_car_idx,
             frame.player_incident_count,
-        ));
+        );
+        // The detector has no frame: the black flag comes from here, so a
+        // consumer can tell a penalty slowdown at once, not 20 s later.
+        for alert in &mut alerts {
+            if let RaceEvent::IncidentAlert {
+                car_idx,
+                black_flag,
+                ..
+            } = alert
+            {
+                *black_flag = frame
+                    .session_flags_of(*car_idx)
+                    .map(|flags| flags & FLAG_BLACK != 0);
+            }
+        }
+        events.extend(alerts);
         // Every frame: a hard event's watch must start on the frame it
         // happened on, whatever the cadence.
         let registry = &self.car_registry;

@@ -629,6 +629,7 @@ fn publisher_identity_is_distinct_from_the_subject_car() {
         severity_normalized: 0.29411766,
         incident_count_delta: None,
         reason: "surface_change".to_owned(),
+        black_flag: None,
     };
 
     let env = build_event(
@@ -650,6 +651,41 @@ fn publisher_identity_is_distinct_from_the_subject_car() {
         json["payload"]["publisherCarIdx"],
         json["payload"]["subjectCarIdx"]
     );
+    // No per-car flags: the key is omitted, never null.
+    let payload = json["payload"].as_object().unwrap();
+    assert!(!payload.contains_key("blackFlag") && !payload.contains_key("black_flag"));
+}
+
+#[test]
+fn incident_alert_carries_the_black_flag_when_the_sdk_has_it() {
+    let event = RaceEvent::IncidentAlert {
+        lap: 9,
+        session_time: 512.0,
+        car_idx: 5,
+        driver_incident_count: None,
+        previous_track_surface: 3,
+        current_track_surface: 3,
+        previous_speed_mps: 60.0,
+        current_speed_mps: 28.0,
+        speed_drop_mps: 32.0,
+        severity: 0.53,
+        severity_normalized: 0.53,
+        incident_count_delta: None,
+        reason: "speed_drop".to_owned(),
+        black_flag: Some(true),
+    };
+    let json = normalized_event_json(&build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-rig1",
+        None,
+        None,
+    ));
+    assert_envelope_contract(&json, "INCIDENT_ALERT");
+    assert_eq!(json["payload"]["blackFlag"], true);
+    assert_eq!(json["payload"]["black_flag"], true);
 }
 
 #[test]
@@ -1233,6 +1269,7 @@ fn incident_outcome_onset_equals_the_alerts_session_time() {
         severity_normalized: 0.8,
         incident_count_delta: None,
         reason: "speed_drop".to_owned(),
+        black_flag: None,
     });
     let outcome = build(&RaceEvent::IncidentOutcome {
         lap: 6,
@@ -1352,6 +1389,7 @@ fn incident_alert_includes_surface_and_speed_fields() {
         severity_normalized: 0.29411766,
         incident_count_delta: None,
         reason: "surface_change".to_owned(),
+        black_flag: None,
     };
 
     let env = build_event(
@@ -1405,6 +1443,7 @@ fn incident_count_alert_normalizes_raw_iracing_points() {
         severity_normalized: 0.5,
         incident_count_delta: Some(2),
         reason: "incident_count_increase".to_owned(),
+        black_flag: None,
     };
 
     let env = build_event(

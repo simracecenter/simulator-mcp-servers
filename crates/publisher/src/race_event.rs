@@ -520,6 +520,12 @@ pub enum RaceEvent {
         /// iRacing incident points gained, for `incident_count_increase` only.
         incident_count_delta: Option<i32>,
         reason: String,
+        /// The car's black flag (`CarIdxSessionFlags`) was set on the frame
+        /// the alert fired: a car slowing to serve a penalty. Omitted when the
+        /// SDK does not expose per-car flags. Set by the engine, which has the
+        /// frame; the detector leaves it `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black_flag: Option<bool>,
     },
     MicroSectorGain {
         lap: u32,

@@ -363,6 +363,7 @@ mod tests {
             severity_normalized: 0.8,
             incident_count_delta: None,
             reason: "speed_drop".to_owned(),
+            black_flag: None,
         }
     }
 

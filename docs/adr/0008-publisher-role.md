@@ -378,6 +378,12 @@ The four flag keys are omitted when the SDK does not expose
 `CarIdxSessionFlags`. The frame now carries the variable as
 `car_idx_session_flags`, read when its type is bitfield or int.
 
+`INCIDENT_ALERT` gains `blackFlag`: the black bit on the frame the alert
+fired, omitted without per-car flags. A consumer can then tell a penalty
+slowdown when the alert arrives, without waiting 20 s for the outcome's
+`blackFlagAtOnset`. A strong alert may otherwise air before its outcome. The
+engine sets the key, because the detector has no frame.
+
 **Why the outcome and not the alert.** The alert has to go out on the frame the
 drop crosses its threshold, or the replay seek point is lost. So its
 `severityNormalized` stays the value at the threshold, and the cluster's
