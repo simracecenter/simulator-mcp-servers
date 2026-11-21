@@ -855,7 +855,10 @@ mod tests {
         // Parked later in the window: that is the stopped time, not the hit.
         world.set(CAR, |car| car.speed_mps = 0.0);
         let facts = only_facts(&world.run(104.0, 120.0));
-        assert!(close(facts.peak_loss.unwrap(), 10.0 / 60.0), "got {facts:?}");
+        assert!(
+            close(facts.peak_loss.unwrap(), 10.0 / 60.0),
+            "got {facts:?}"
+        );
         assert!(close(facts.lowest.unwrap(), 50.0));
     }
 
@@ -879,7 +882,10 @@ mod tests {
         world.run(100.0, 110.0);
         world.set(CAR, |car| car.track_surface = TRACK_SURFACE_NOT_IN_WORLD);
         let facts = only_facts(&world.cadence(110.25));
-        assert!(close(facts.peak_loss.unwrap(), 10.0 / 60.0), "got {facts:?}");
+        assert!(
+            close(facts.peak_loss.unwrap(), 10.0 / 60.0),
+            "got {facts:?}"
+        );
     }
 
     #[test]
