@@ -17,7 +17,7 @@ use crate::fuel_projection::FuelProjection;
 use crate::gap_finder::{find_cars_ahead, find_cars_behind};
 use crate::horizon::HorizonDetector;
 use crate::incident_cluster::IncidentClusterDetector;
-use crate::incident_outcome::{CarSample, IncidentOutcomeTracker};
+use crate::incident_outcome::{CarSample, IncidentOutcomeTracker, FLAG_BLACK};
 use crate::lap_timer::LapTimer;
 use crate::lift_coast::LiftCoastDetector;
 use crate::micro_sector::MicroSectorTracker;
@@ -337,14 +337,29 @@ impl NarrativeEngine {
             self.anchor_count,
             self.track_length_m,
         );
-        events.extend(self.basic_incident.update(
+        let mut alerts = self.basic_incident.update(
             &self.car_registry,
             frame.lap,
             frame.session_time,
             frame.session_tick,
             frame.player_car_idx,
             frame.player_incident_count,
-        ));
+        );
+        // The detector has no frame: the black flag comes from here, so a
+        // consumer can tell a penalty slowdown at once, not 20 s later.
+        for alert in &mut alerts {
+            if let RaceEvent::IncidentAlert {
+                car_idx,
+                black_flag,
+                ..
+            } = alert
+            {
+                *black_flag = frame
+                    .session_flags_of(*car_idx)
+                    .map(|flags| flags & FLAG_BLACK != 0);
+            }
+        }
+        events.extend(alerts);
         // Every frame: a hard event's watch must start on the frame it
         // happened on, whatever the cadence.
         let registry = &self.car_registry;
@@ -1194,6 +1209,7 @@ fn outcome_sample(
             .copied()
             .filter(|position| *position > 0),
         class_position: frame.class_position_of(car_idx),
+        session_flags: frame.session_flags_of(car_idx),
     })
 }
 
@@ -1268,6 +1284,7 @@ mod tests {
             player_team_incident_count: None,
             player_car_class_position: 0,
             car_idx_class_position: vec![],
+            car_idx_session_flags: vec![],
             car_idx_lap_completed: vec![lap as i32, lap as i32],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,
@@ -1305,6 +1322,7 @@ mod tests {
             player_team_incident_count: None,
             player_car_class_position: 0,
             car_idx_class_position: vec![],
+            car_idx_session_flags: vec![],
             car_idx_lap_completed: vec![lap as i32, lap as i32],
             lf_temp_m: 0.0,
             rf_temp_m: 0.0,
@@ -1380,6 +1398,7 @@ mod tests {
                 reason: "speed_drop".to_owned(),
                 speed_drop_mps: 20.0,
                 severity_normalized: 0.6,
+                peak_speed_mps: 40.0,
             });
         let evaluated = engine.process_frame_with_incident_cadence(&frame, true);
         assert!(evaluated

@@ -392,6 +392,7 @@ mod tests {
             reason: "speed_drop".to_owned(),
             speed_drop_mps: 20.0,
             severity_normalized: 0.6,
+            peak_speed_mps: 40.0,
         }
     }
 

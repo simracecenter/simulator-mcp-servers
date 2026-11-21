@@ -520,6 +520,12 @@ pub enum RaceEvent {
         /// iRacing incident points gained, for `incident_count_increase` only.
         incident_count_delta: Option<i32>,
         reason: String,
+        /// The car's black flag (`CarIdxSessionFlags`) was set on the frame
+        /// the alert fired: a car slowing to serve a penalty. Omitted when the
+        /// SDK does not expose per-car flags. Set by the engine, which has the
+        /// frame; the detector leaves it `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black_flag: Option<bool>,
     },
     MicroSectorGain {
         lap: u32,
@@ -836,6 +842,33 @@ pub enum RaceEvent {
         class_position_from: Option<u8>,
         #[serde(skip_serializing_if = "Option::is_none")]
         class_position_to: Option<u8>,
+        /// How much of its speed the car really lost: `(peak − lowest) /
+        /// peak`, 0 to 1, from the speed before the hard event to the lowest
+        /// seen in the first `PEAK_LOSS_WINDOW_S` after it. 1.0 when the car
+        /// left the world inside that time. The alert's own
+        /// `severity_normalized` is taken at the detection threshold, so it
+        /// cannot tell a lift from a crash. Omitted when there was no speed to
+        /// measure against.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        peak_speed_loss_normalized: Option<f32>,
+        /// The lowest speed in that time, m/s. Omitted with the key above.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lowest_speed_mps: Option<f32>,
+        /// The repair flag (meatball) was set at some sample in the window.
+        /// This and the three flag keys below are omitted when the SDK does
+        /// not expose `CarIdxSessionFlags`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        repair_flag: Option<bool>,
+        /// The black flag was set at some sample in the window.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black_flag: Option<bool>,
+        /// The black flag was already set when the hard event fired: a car
+        /// slowing to serve a penalty, not a car that crashed.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black_flag_at_onset: Option<bool>,
+        /// The disqualify flag was set at some sample in the window.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        disqualified: Option<bool>,
     },
     /// The publisher discarded all session-scoped state because iRacing moved to
     /// a different session. Consumers should drop cached car indices, battles,

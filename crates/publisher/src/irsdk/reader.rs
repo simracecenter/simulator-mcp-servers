@@ -268,6 +268,19 @@ pub fn build_frame(
         .map(|v| read_i32_array(buf, v.offset, v.count.min(64)))
         .unwrap_or_default();
 
+    // A bitfield in the SDK header; an int is accepted too, as for
+    // `SessionFlags`.
+    let car_idx_session_flags = vars
+        .get("CarIdxSessionFlags")
+        .filter(|v| v.type_code == IR_BITFIELD || v.type_code == IR_INT)
+        .map(|v| {
+            read_i32_array(buf, v.offset, v.count.min(64))
+                .into_iter()
+                .map(|flags| flags as u32)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let fuel_level = vars
         .get("FuelLevel")
         .map(|v| read_f32(buf, v.offset))
@@ -313,6 +326,7 @@ pub fn build_frame(
         car_idx_position,
         car_idx_on_pit_road,
         car_idx_track_surface,
+        car_idx_session_flags,
         lap_last_lap_time,
         session_info_update,
         session_tick,
@@ -489,6 +503,8 @@ mod tests {
         // Optional variables the buffer does not carry.
         assert_eq!(frame.player_car_class_position, 0);
         assert!(frame.car_idx_class_position.is_empty());
+        assert!(frame.car_idx_session_flags.is_empty());
+        assert_eq!(frame.session_flags_of(0), None);
         assert_eq!(frame.player_class_position(), None);
         assert_eq!(frame.player_driver_incident_count, None);
         assert_eq!(frame.player_team_incident_count, None);
@@ -552,5 +568,52 @@ mod tests {
         assert_eq!(frame.class_position_of(9), None);
         assert_eq!(frame.player_driver_incident_count, Some(4));
         assert_eq!(frame.player_team_incident_count, Some(9));
+    }
+
+    #[test]
+    fn per_car_session_flags_are_read_when_present() {
+        let (mut buf, mut index) = make_test_buf();
+        //   0x40  CarIdxSessionFlags  bitfield×3
+        buf.resize(0x4C, 0);
+        // Servicible; servicible + black + repair; servicible + disqualify.
+        for (i, v) in [0x0004_0000u32, 0x0015_0000, 0x0006_0000]
+            .into_iter()
+            .enumerate()
+        {
+            let at = 0x40 + i * 4;
+            buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        index.insert(
+            "CarIdxSessionFlags".into(),
+            VarInfo {
+                type_code: IR_BITFIELD,
+                offset: 0x40,
+                count: 3,
+            },
+        );
+
+        let frame = build_frame(&buf, &index, 0).expect("frame");
+        assert_eq!(
+            frame.car_idx_session_flags,
+            vec![0x0004_0000, 0x0015_0000, 0x0006_0000]
+        );
+        assert_eq!(frame.session_flags_of(1), Some(0x0015_0000));
+        assert_eq!(frame.session_flags_of(9), None);
+    }
+
+    #[test]
+    fn per_car_session_flags_of_another_type_are_ignored() {
+        let (mut buf, mut index) = make_test_buf();
+        buf.resize(0x4C, 0);
+        index.insert(
+            "CarIdxSessionFlags".into(),
+            VarInfo {
+                type_code: IR_FLOAT,
+                offset: 0x40,
+                count: 3,
+            },
+        );
+        let frame = build_frame(&buf, &index, 0).expect("frame");
+        assert!(frame.car_idx_session_flags.is_empty());
     }
 }

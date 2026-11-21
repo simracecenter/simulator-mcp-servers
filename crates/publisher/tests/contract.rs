@@ -37,6 +37,7 @@ fn minimal_frame() -> TelemetryFrame {
         player_team_incident_count: None,
         player_car_class_position: 0,
         car_idx_class_position: vec![],
+        car_idx_session_flags: vec![],
         car_idx_lap_completed: vec![3, 3],
         lf_temp_m: 0.0,
         rf_temp_m: 0.0,
@@ -628,6 +629,7 @@ fn publisher_identity_is_distinct_from_the_subject_car() {
         severity_normalized: 0.29411766,
         incident_count_delta: None,
         reason: "surface_change".to_owned(),
+        black_flag: None,
     };
 
     let env = build_event(
@@ -649,6 +651,41 @@ fn publisher_identity_is_distinct_from_the_subject_car() {
         json["payload"]["publisherCarIdx"],
         json["payload"]["subjectCarIdx"]
     );
+    // No per-car flags: the key is omitted, never null.
+    let payload = json["payload"].as_object().unwrap();
+    assert!(!payload.contains_key("blackFlag") && !payload.contains_key("black_flag"));
+}
+
+#[test]
+fn incident_alert_carries_the_black_flag_when_the_sdk_has_it() {
+    let event = RaceEvent::IncidentAlert {
+        lap: 9,
+        session_time: 512.0,
+        car_idx: 5,
+        driver_incident_count: None,
+        previous_track_surface: 3,
+        current_track_surface: 3,
+        previous_speed_mps: 60.0,
+        current_speed_mps: 28.0,
+        speed_drop_mps: 32.0,
+        severity: 0.53,
+        severity_normalized: 0.53,
+        incident_count_delta: None,
+        reason: "speed_drop".to_owned(),
+        black_flag: Some(true),
+    };
+    let json = normalized_event_json(&build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-rig1",
+        None,
+        None,
+    ));
+    assert_envelope_contract(&json, "INCIDENT_ALERT");
+    assert_eq!(json["payload"]["blackFlag"], true);
+    assert_eq!(json["payload"]["black_flag"], true);
 }
 
 #[test]
@@ -1031,6 +1068,12 @@ fn incident_outcome_carries_the_cars_fate_and_the_cluster_key() {
         places_lost: Some(5),
         class_position_from: Some(2),
         class_position_to: Some(5),
+        peak_speed_loss_normalized: Some(0.75),
+        lowest_speed_mps: Some(12.5),
+        repair_flag: Some(true),
+        black_flag: Some(true),
+        black_flag_at_onset: Some(false),
+        disqualified: Some(false),
     };
     let json = normalized_event_json(&build_event(
         &event,
@@ -1066,6 +1109,16 @@ fn incident_outcome_carries_the_cars_fate_and_the_cluster_key() {
     assert_eq!(payload["placesLost"], 5);
     assert_eq!(payload["classPositionFrom"], 2);
     assert_eq!(payload["classPositionTo"], 5);
+    // Peak speed loss (P-5) and per-car flags (P-3), in both spellings.
+    assert_eq!(payload["peakSpeedLossNormalized"], 0.75);
+    assert_eq!(payload["peak_speed_loss_normalized"], 0.75);
+    assert_eq!(payload["lowestSpeedMps"], 12.5);
+    assert_eq!(payload["repairFlag"], true);
+    assert_eq!(payload["repair_flag"], true);
+    assert_eq!(payload["blackFlag"], true);
+    assert_eq!(payload["blackFlagAtOnset"], false);
+    assert_eq!(payload["black_flag_at_onset"], false);
+    assert_eq!(payload["disqualified"], false);
 
     // The same key the cluster with this id carries.
     let cluster = RaceEvent::IncidentCluster {
@@ -1126,6 +1179,12 @@ fn incident_outcome_omits_keys_it_has_no_value_for() {
         places_lost: None,
         class_position_from: None,
         class_position_to: None,
+        peak_speed_loss_normalized: None,
+        lowest_speed_mps: None,
+        repair_flag: None,
+        black_flag: None,
+        black_flag_at_onset: None,
+        disqualified: None,
     };
     let json = normalized_event_json(&build_event(
         &event,
@@ -1154,6 +1213,17 @@ fn incident_outcome_omits_keys_it_has_no_value_for() {
         "class_position_from",
         "classPositionTo",
         "class_position_to",
+        "peakSpeedLossNormalized",
+        "peak_speed_loss_normalized",
+        "lowestSpeedMps",
+        "lowest_speed_mps",
+        "repairFlag",
+        "repair_flag",
+        "blackFlag",
+        "black_flag",
+        "blackFlagAtOnset",
+        "black_flag_at_onset",
+        "disqualified",
     ] {
         assert!(!payload.contains_key(key), "{key} should be omitted");
     }
@@ -1199,6 +1269,7 @@ fn incident_outcome_onset_equals_the_alerts_session_time() {
         severity_normalized: 0.8,
         incident_count_delta: None,
         reason: "speed_drop".to_owned(),
+        black_flag: None,
     });
     let outcome = build(&RaceEvent::IncidentOutcome {
         lap: 6,
@@ -1217,6 +1288,12 @@ fn incident_outcome_onset_equals_the_alerts_session_time() {
         places_lost: Some(0),
         class_position_from: None,
         class_position_to: None,
+        peak_speed_loss_normalized: None,
+        lowest_speed_mps: None,
+        repair_flag: None,
+        black_flag: None,
+        black_flag_at_onset: None,
+        disqualified: None,
     });
     assert_eq!(
         outcome["payload"]["onsetSessionTime"],
@@ -1312,6 +1389,7 @@ fn incident_alert_includes_surface_and_speed_fields() {
         severity_normalized: 0.29411766,
         incident_count_delta: None,
         reason: "surface_change".to_owned(),
+        black_flag: None,
     };
 
     let env = build_event(
@@ -1365,6 +1443,7 @@ fn incident_count_alert_normalizes_raw_iracing_points() {
         severity_normalized: 0.5,
         incident_count_delta: Some(2),
         reason: "incident_count_increase".to_owned(),
+        black_flag: None,
     };
 
     let env = build_event(

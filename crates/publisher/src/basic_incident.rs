@@ -62,6 +62,10 @@ pub struct HardEvent {
     pub speed_drop_mps: f32,
     /// The alert's own `severity_normalized`, 0.0–1.0.
     pub severity_normalized: f32,
+    /// What the car was doing before the drop: the alert's
+    /// `previous_speed_mps`. The outcome tracker measures the real size of
+    /// the drop against it (`peak_speed_loss_normalized`).
+    pub peak_speed_mps: f32,
 }
 
 pub struct BasicIncidentDetector {
@@ -236,6 +240,7 @@ impl BasicIncidentDetector {
                         severity_normalized,
                         incident_count_delta: None,
                         reason: reason.clone(),
+                        black_flag: None,
                     });
                     self.recent_hard_events.push_back(HardEvent {
                         car_idx: car.car_idx,
@@ -245,6 +250,7 @@ impl BasicIncidentDetector {
                         reason,
                         speed_drop_mps,
                         severity_normalized,
+                        peak_speed_mps: peak,
                     });
                     if car.car_idx == player_car_idx {
                         player_alert_emitted = true;
@@ -287,6 +293,7 @@ impl BasicIncidentDetector {
                         reason: "incident_count_increase".to_owned(),
                         speed_drop_mps,
                         severity_normalized,
+                        peak_speed_mps: prev.speed_ema_mps,
                     });
                     events.push(RaceEvent::IncidentAlert {
                         lap,
@@ -302,6 +309,7 @@ impl BasicIncidentDetector {
                         severity_normalized,
                         incident_count_delta: Some(player_incident_count - previous_count),
                         reason: "incident_count_increase".to_owned(),
+                        black_flag: None,
                     });
                 }
             }
