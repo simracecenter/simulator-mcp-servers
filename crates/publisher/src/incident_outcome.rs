@@ -9,7 +9,8 @@
 use std::collections::VecDeque;
 
 use crate::basic_incident::{
-    HardEvent, STATIONARY_SPEED_MPS, TRACK_SURFACE_NOT_IN_WORLD, TRACK_SURFACE_OFF_TRACK,
+    in_pit_area, HardEvent, STATIONARY_SPEED_MPS, TRACK_SURFACE_NOT_IN_WORLD,
+    TRACK_SURFACE_OFF_TRACK,
 };
 use crate::race_event::RaceEvent;
 
@@ -138,12 +139,15 @@ impl IncidentOutcomeTracker {
                 }
                 continue;
             }
-            // A car in the pit lane or out of the world has no outcome worth
-            // reporting; the detector does not alert for one either.
+            // A car in the pit area (approach, pit road, stall) or out of
+            // the world has no outcome worth reporting; the detector does
+            // not alert for one either.
             let Some(car) = sample(ev.car_idx) else {
                 continue;
             };
-            if car.track_surface <= TRACK_SURFACE_NOT_IN_WORLD || car.on_pit_road {
+            if car.track_surface <= TRACK_SURFACE_NOT_IN_WORLD
+                || in_pit_area(car.track_surface, car.on_pit_road)
+            {
                 continue;
             }
             self.watches.push_back(Watch {
@@ -212,7 +216,7 @@ impl IncidentOutcomeTracker {
             if let Some(flags) = car.session_flags {
                 watch.flags_seen = Some(watch.flags_seen.unwrap_or(0) | flags);
             }
-            if car.on_pit_road {
+            if in_pit_area(car.track_surface, car.on_pit_road) {
                 watch.pitted = true;
             } else {
                 if in_peak_window {

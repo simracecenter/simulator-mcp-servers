@@ -33,12 +33,28 @@ const MIN_PREV_SPEED_MPS: f32 = 5.0;
 pub(crate) const TRACK_SURFACE_NOT_IN_WORLD: i32 = -1;
 /// iRacing `irsdk_TrkLoc`: 0 means off track.
 pub(crate) const TRACK_SURFACE_OFF_TRACK: i32 = 0;
+/// iRacing `irsdk_TrkLoc`: 1 means the car is in its pit stall.
+pub(crate) const TRACK_SURFACE_IN_PIT_STALL: i32 = 1;
+/// iRacing `irsdk_TrkLoc`: 2 (`AproachingPits`) is the pit-entry approach,
+/// where cars brake hard while `on_pit_road` is still false.
+pub(crate) const TRACK_SURFACE_APPROACHING_PITS: i32 = 2;
+/// iRacing `irsdk_TrkLoc`: 3 means on track.
+pub(crate) const TRACK_SURFACE_ON_TRACK: i32 = 3;
 /// A car slower than this counts as stationary: incident points gained while
 /// crawling (pit stall, grid, tow) describe no on-track moment.
 pub(crate) const STATIONARY_SPEED_MPS: f32 = 5.0;
 /// Incident points at which an `incident_count_increase` alert is treated as
 /// maximally severe. iRacing awards 0x/1x/2x/4x per infraction.
 const MAX_INCIDENT_POINTS: f32 = 4.0;
+
+/// True while a car is anywhere in the pit area: on pit road, in its stall,
+/// or on the pit-entry approach. Speed collapses there are pit stops, not
+/// incidents.
+pub(crate) fn in_pit_area(track_surface: i32, on_pit_road: bool) -> bool {
+    on_pit_road
+        || track_surface == TRACK_SURFACE_IN_PIT_STALL
+        || track_surface == TRACK_SURFACE_APPROACHING_PITS
+}
 
 #[derive(Clone, Copy)]
 struct CarSnapshot {
@@ -147,10 +163,14 @@ impl BasicIncidentDetector {
                 speed_ema_mps: car.speed_ema_mps,
             };
 
-            // Speed history: cars out of world or on pit road produce no usable
-            // signal, so their window is reset rather than polluted.
+            // Speed history: cars out of world or in the pit area produce no
+            // usable signal, so their window is reset rather than polluted.
+            // Clearing on the approach keeps the racing-speed peak from
+            // carrying into pit-entry braking.
             let history = self.speed_history.entry(car.car_idx).or_default();
-            if snapshot.track_surface <= TRACK_SURFACE_NOT_IN_WORLD || snapshot.on_pit_road {
+            if snapshot.track_surface <= TRACK_SURFACE_NOT_IN_WORLD
+                || in_pit_area(snapshot.track_surface, snapshot.on_pit_road)
+            {
                 history.clear();
             } else {
                 if history.back().is_some_and(|(t, _)| session_time < *t) {
@@ -177,7 +197,8 @@ impl BasicIncidentDetector {
                 let cur = snapshot.speed_ema_mps;
                 let speed_drop_mps = (peak - cur).max(0.0);
                 let severity = speed_drop_mps / peak.max(1.0);
-                let not_pit_transition = !snapshot.on_pit_road && !prev.on_pit_road;
+                let not_pit_transition = !in_pit_area(snapshot.track_surface, snapshot.on_pit_road)
+                    && !in_pit_area(prev.track_surface, prev.on_pit_road);
                 let was_moving = peak >= MIN_PREV_SPEED_MPS;
                 // A hard collapse measured against the recent peak, so an EMA
                 // that unwinds over many frames still qualifies.
@@ -189,10 +210,12 @@ impl BasicIncidentDetector {
 
                 // A transition onto the off-track surface while moving arms the
                 // car: the speed loss may take up to OFF_TRACK_ARM_S to show.
+                // Leaving the pit area onto the grass is not a racing excursion.
                 if in_world
                     && was_moving
                     && snapshot.track_surface == TRACK_SURFACE_OFF_TRACK
                     && prev.track_surface > TRACK_SURFACE_OFF_TRACK
+                    && !in_pit_area(prev.track_surface, prev.on_pit_road)
                 {
                     self.off_track_armed_until
                         .insert(car.car_idx, session_time + OFF_TRACK_ARM_S);
@@ -279,7 +302,8 @@ impl BasicIncidentDetector {
                 // crawling are bookkeeping, not a broadcastable moment.
                 let in_world = car.track_surface > TRACK_SURFACE_NOT_IN_WORLD
                     && prev.track_surface > TRACK_SURFACE_NOT_IN_WORLD;
-                let in_pits = car.on_pit_road || prev.on_pit_road;
+                let in_pits = in_pit_area(car.track_surface, car.on_pit_road)
+                    || in_pit_area(prev.track_surface, prev.on_pit_road);
                 let was_moving = prev.speed_ema_mps >= STATIONARY_SPEED_MPS
                     || car.speed_ema_mps >= STATIONARY_SPEED_MPS;
 
@@ -360,7 +384,7 @@ mod tests {
         let first = detector.update(&registry, 4, 120.0, 60, 7, 0);
         assert!(first.is_empty());
 
-        registry.get_mut(7).unwrap().track_surface = 1;
+        registry.get_mut(7).unwrap().track_surface = 0;
         registry.get_mut(7).unwrap().speed_ema_mps = 52.0;
         let events = detector.update(&registry, 4, 121.0, 1_920, 7, 6);
 
@@ -702,6 +726,53 @@ mod tests {
             1,
         );
         assert!(emitted.iter().flatten().count() == 0);
+    }
+
+    #[test]
+    fn braking_on_the_pit_approach_does_not_alert() {
+        let mut registry = CarRegistry::new();
+        registry.insert(car(9, 3, false, 60.0), 0);
+        let mut detector = BasicIncidentDetector::new();
+        let _ = detector.update(&registry, 4, 100.0, 0, 0, 0);
+        // Build a racing-speed peak on track.
+        let _ = drive(
+            &mut detector,
+            &mut registry,
+            9,
+            &[60.0; 30],
+            100.0 + 1.0 / 60.0,
+            1,
+        );
+
+        // Onto the pit approach, still off pit road, and the speed halves:
+        // pit-entry braking, as in run-1795474273 (surface 2 -> 2, ~0.50).
+        registry.get_mut(9).unwrap().track_surface = TRACK_SURFACE_APPROACHING_PITS;
+        let speeds: Vec<f32> = (1..=30).map(|i| 60.0 - 30.0 * i as f32 / 30.0).collect();
+        let mut emitted = drive(&mut detector, &mut registry, 9, &speeds, 100.6, 31);
+        emitted.extend(drive(
+            &mut detector,
+            &mut registry,
+            9,
+            &[25.0; 30],
+            101.2,
+            61,
+        ));
+        assert!(
+            emitted.iter().flatten().count() == 0,
+            "pit-approach braking must not alert"
+        );
+        assert!(detector.recent_hard_events().is_empty());
+    }
+
+    #[test]
+    fn incident_points_on_the_pit_approach_do_not_alert() {
+        let mut registry = CarRegistry::new();
+        registry.insert(car(7, TRACK_SURFACE_APPROACHING_PITS, false, 30.0), 0);
+        let mut detector = BasicIncidentDetector::new();
+        let _ = detector.update(&registry, 4, 120.0, 60, 7, 0);
+
+        let events = detector.update(&registry, 4, 121.0, 120, 7, 1);
+        assert!(events.is_empty());
     }
 
     #[test]

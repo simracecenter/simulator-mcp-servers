@@ -456,21 +456,51 @@ pub enum RaceEvent {
         class_position: Option<u8>,
         pit_frames: u32,
     },
+    /// A car entering the pits — any car in the field, not only the rig's
+    /// (ADR 0008, "Field-wide pit events"). Fires at the earlier of the
+    /// pit-approach edge or `on_pit_road` rising.
     PitEntry {
         lap: u32,
         session_time: f32,
-        player_car_idx: u8,
+        /// The pitting car.
+        car_idx: u8,
+        /// Set only when the pitting car is the rig's own, so rig payloads
+        /// keep their pre-0.8.19 shape.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_car_idx: Option<u8>,
         position: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
         class_position: Option<u8>,
+        /// `approach` (surface OnTrack -> AproachingPits) or `pit_road`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detected_by: Option<String>,
     },
+    /// A car leaving pit road (debounced) — any car in the field.
     PitExit {
         lap: u32,
         session_time: f32,
-        player_car_idx: u8,
+        /// The pitting car.
+        car_idx: u8,
+        /// Set only when the pitting car is the rig's own.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_car_idx: Option<u8>,
         position: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
         class_position: Option<u8>,
+        /// Time stopped in the pit stall, seconds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_s: Option<f32>,
+        /// Time on pit road, seconds. Omitted when the car was first seen
+        /// already on pit road.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pit_lane_s: Option<f32>,
+        /// Entry seen and no stall stop.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        drive_through: Option<bool>,
+        /// No entry seen: the stint opened from the garage or the stop was
+        /// under way at connect.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from_garage: Option<bool>,
     },
     TireDegradation {
         lap: u32,
