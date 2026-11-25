@@ -2048,9 +2048,14 @@ fn pit_exit_publishes_an_unclassified_car_without_dropping_identity() {
     let event = RaceEvent::PitExit {
         lap: 0,
         session_time: 40.0,
-        player_car_idx: 0,
+        car_idx: 0,
+        player_car_idx: Some(0),
         position: 0,
         class_position: None,
+        stop_s: Some(0.0),
+        pit_lane_s: None,
+        drive_through: Some(false),
+        from_garage: Some(true),
     };
 
     let env = build_event(
@@ -2068,6 +2073,48 @@ fn pit_exit_publishes_an_unclassified_car_without_dropping_identity() {
     assert_eq!(json["payload"]["position"], 0);
     assert_eq!(json["payload"]["subjectRole"], "DRIVER");
     assert_eq!(json["payload"]["subjectCarIdx"], 0);
+    // The rig's own stop keeps its pre-0.8.19 identity key.
+    assert_eq!(json["payload"]["player_car_idx"], 0);
+    assert_eq!(json["car"]["carIdx"], 0);
+}
+
+#[test]
+fn pit_entry_for_another_car_is_keyed_on_the_pitting_car() {
+    // Field-wide pit events (v0.8.19): car 1 pits while the rig (car 0) races.
+    let event = RaceEvent::PitEntry {
+        lap: 4,
+        session_time: 1234.5,
+        car_idx: 1,
+        player_car_idx: None,
+        position: 4,
+        class_position: Some(2),
+        detected_by: Some("approach".to_owned()),
+    };
+
+    let env = build_event(
+        &event,
+        &minimal_frame(),
+        None,
+        "session-abc",
+        "rig-001",
+        None,
+        None,
+    );
+    let json = normalized_event_json(&env);
+
+    assert_envelope_contract(&json, "PIT_ENTRY");
+    assert_eq!(json["scope"], "CAR_SCOPED");
+    assert_eq!(json["car"]["carIdx"], 1);
+    assert_eq!(json["subject"]["carIdx"], 1);
+    let payload = &json["payload"];
+    assert_eq!(payload["subjectRole"], "TRIGGER");
+    assert_eq!(payload["subjectCarIdx"], 1);
+    assert_eq!(payload["car_idx"], 1);
+    assert_eq!(payload["detected_by"], "approach");
+    assert_eq!(payload["position"], 4);
+    // No rig identity: older Directors fall back to the envelope car.
+    assert!(payload.get("player_car_idx").is_none());
+    assert!(payload.get("playerCarIdx").is_none());
 }
 
 #[test]
@@ -2539,9 +2586,11 @@ fn pit_and_driver_material_events_carry_class_position() {
     let pit_entry = RaceEvent::PitEntry {
         lap: 9,
         session_time: 700.0,
-        player_car_idx: 0,
+        car_idx: 0,
+        player_car_idx: Some(0),
         position: 12,
         class_position: Some(4),
+        detected_by: Some("pit_road".to_owned()),
     };
     let json = build(&pit_entry, &minimal_frame());
     assert_envelope_contract(&json, "PIT_ENTRY");
@@ -2550,9 +2599,14 @@ fn pit_and_driver_material_events_carry_class_position() {
     let pit_exit = RaceEvent::PitExit {
         lap: 9,
         session_time: 740.0,
-        player_car_idx: 0,
+        car_idx: 0,
+        player_car_idx: Some(0),
         position: 14,
         class_position: None,
+        stop_s: Some(24.0),
+        pit_lane_s: Some(41.0),
+        drive_through: Some(false),
+        from_garage: Some(false),
     };
     let json = build(&pit_exit, &minimal_frame());
     assert_envelope_contract(&json, "PIT_EXIT");

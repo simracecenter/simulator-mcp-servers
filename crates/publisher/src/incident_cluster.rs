@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::basic_incident::HardEvent;
+use crate::basic_incident::{in_pit_area, HardEvent};
 use crate::car_registry::{CarRegistry, CarState};
 use crate::race_event::{IncidentHardEvent, IncidentParticipant, RaceEvent};
 
@@ -81,7 +81,11 @@ impl IncidentClusterDetector {
 
         for car in registry
             .recently_observed_cars(session_tick, MAX_CAR_AGE_TICKS)
-            .filter(|car| !car.on_pit_road && car.track_surface >= 0)
+            // Pit-area cars (pit road, stall, approach) brake for the pits:
+            // they neither read as slowed nor feed the racing-speed baseline.
+            .filter(|car| {
+                !in_pit_area(car.track_surface, car.on_pit_road) && car.track_surface >= 0
+            })
         {
             let bucket = bucket_of(car.lap_dist_pct);
             let key = (car.car_class_id, bucket);
@@ -496,6 +500,40 @@ mod tests {
             &deque(vec![hard(3, 3.9, CLUSTER_BUCKET)]),
         );
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn pit_approach_cars_neither_slow_a_bucket_nor_feed_the_baseline() {
+        use crate::basic_incident::TRACK_SURFACE_APPROACHING_PITS;
+        // Slowed cars on the pit approach do not qualify, even with a
+        // corroborating hard event.
+        let (mut registry, mut detector) = slowed_registry();
+        for idx in 1..=3 {
+            registry.get_mut(idx).unwrap().track_surface = TRACK_SURFACE_APPROACHING_PITS;
+        }
+        let events = detector.update(
+            &registry,
+            N,
+            1,
+            4.0,
+            4,
+            false,
+            &deque(vec![hard(1, 3.9, CLUSTER_BUCKET)]),
+        );
+        assert!(events.is_empty());
+        assert_eq!(detector.uncorroborated_slowdowns, 0);
+
+        // Pit-approach speeds never become the bucket's baseline.
+        let mut registry = registry_with_cluster(30.0, 1);
+        for idx in 1..=3 {
+            registry.get_mut(idx).unwrap().track_surface = TRACK_SURFACE_APPROACHING_PITS;
+        }
+        let mut detector = IncidentClusterDetector::new();
+        for tick in 1..=3 {
+            detector.update(&registry, N, 1, tick as f32, tick, false, &none());
+        }
+        assert!(!detector.speed_baseline.contains_key(&(1, CLUSTER_BUCKET)));
+        assert!(!detector.baseline_samples.contains_key(&(1, CLUSTER_BUCKET)));
     }
 
     #[test]

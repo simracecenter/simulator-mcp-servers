@@ -411,6 +411,71 @@ installed on a Rig. Until then a Director rejects every batch that contains an
 the batch, and the events that shared the batch are lost with it. The cluster
 keys above need no ordering: a Director that does not know them ignores them.
 
+## Field-wide pit events (v0.8.19)
+
+Stream wFDmf2QUKOY (run-1795474273) aired pit stops as incident replays. In
+iRacing the pit-entry approach is its own track surface, `AproachingPits` (2),
+and `on_pit_road` is still false there, so the pit-entry braking halved a car's
+speed and read as a `speed_drop`. 38 of the run's 146 `INCIDENT_ALERT`s were
+this, all at lapDistPct ≈ 0.94 with surface 2 → 2 and severity ≈ 0.50, and
+about 30 of its 68 `INCIDENT_CLUSTER`s were built from them. In the same run
+`PIT_ENTRY` / `PIT_EXIT` fired only for the rig's own car, so the Director had
+no pit story for the rest of the field.
+
+### Incident detectors ignore the pit area
+
+"In the pit area" means `on_pit_road`, surface `InPitStall` (1) or surface
+`AproachingPits` (2). The basic incident detector resets a car's speed window
+there, raises no `speed_drop` / `surface_drop` alert when either side of the
+comparison is in the pit area, does not arm the off-track check from a pit-area
+surface, and drops incident points gained there. The cluster detector neither
+counts pit-area cars as slowed nor feeds their speed into the bucket baseline.
+The outcome tracker opens no watch for a car in the pit area and marks a watch
+`pitted` when its car reaches one.
+
+### Pit events for every car
+
+`PIT_ENTRY` and `PIT_EXIT` now fire for every car. No event type is added, so
+the event catalog is unchanged. A per-car tracker reads the surface, pit flag,
+position and class position straight from the frame arrays, because the car
+registry skips cars reporting position 0, as a car in its pit stall does.
+
+- **Entry** fires on the first of: surface `OnTrack` (3) → `AproachingPits` (2)
+  while moving (≥ 5 m/s), or `on_pit_road` rising. **`PIT_ENTRY` therefore now
+  fires at the pit-approach braking**, a few seconds earlier than before. An
+  approach the car drives back out of (back on track for 0.5 s without
+  reaching pit road) is dropped silently: the entry already went out, and the
+  case is rare enough to accept.
+- **Exit** fires when `on_pit_road` has fallen and stayed false for 0.5 s, so a
+  one-frame flicker at the pit-lane line is not two stops.
+- A car first seen already on pit road (out of the garage, or a stop under way
+  at connect) gets no entry. Its exit carries `from_garage: true`. This also
+  applies to the rig: a publisher that starts in the pit stall no longer sends
+  a `PIT_ENTRY` for it.
+- A clock restart clears every car's state, and surface `NotInWorld` (-1)
+  clears that car's state, without an event.
+
+Payload keys (snake_case, with the usual camelCase copies):
+
+| Event | Key | Value |
+| --- | --- | --- |
+| both | `car_idx` | The pitting car. The envelope `car` and `subject` are this car. |
+| both | `player_car_idx` | The rig's car index, **only** when the pitting car is the rig's. Omitted for any other car, so rig payloads keep their old shape and an older Director falls back to the envelope `car`. |
+| both | `position`, `class_position` | The pitting car's, at the event. |
+| `PIT_ENTRY` | `detected_by` | `approach` or `pit_road`. |
+| `PIT_EXIT` | `stop_s` | Seconds stopped (below 1 m/s) in the pit stall. |
+| `PIT_EXIT` | `pit_lane_s` | Seconds on pit road. Omitted when the car was first seen on pit road. |
+| `PIT_EXIT` | `drive_through` | The entry was seen and `stop_s` is 0. |
+| `PIT_EXIT` | `from_garage` | No entry was seen. |
+
+Subject role: `DRIVER` for the rig's own car, `TRIGGER` for any other car. No
+role is added.
+
+`PAYLOAD_CONTRACT_VERSION` stays at `3`: every new key is optional and
+`player_car_idx` keeps its meaning where present. No rollout order is needed.
+A Director that does not know field pit events sees more `PIT_ENTRY` /
+`PIT_EXIT` events, keyed on the envelope car.
+
 ## References
 
 - [ADR 0003](0003-single-active-simulator-constraint.md)

@@ -21,6 +21,7 @@ use crate::incident_outcome::{CarSample, IncidentOutcomeTracker, FLAG_BLACK};
 use crate::lap_timer::LapTimer;
 use crate::lift_coast::LiftCoastDetector;
 use crate::micro_sector::MicroSectorTracker;
+use crate::pit_tracker::PitTracker;
 use crate::race_event::{
     BattleIdentity, BattlePhase, DriverEffort, FlagScope, GapTrend, LifecycleOrigin, RaceEvent,
 };
@@ -97,7 +98,7 @@ pub struct NarrativeEngine {
     last_material_gaps: Option<MaterialGaps>,
     prev_in_car: bool,
     prev_lap: Option<u32>,
-    prev_on_pit: bool,
+    pit_tracker: PitTracker,
     prev_position: Option<u8>,
     prev_class_position: Option<u8>,
     prev_anchor_bucket: Option<u8>,
@@ -160,7 +161,7 @@ impl NarrativeEngine {
             last_material_gaps: None,
             prev_in_car: false,
             prev_lap: None,
-            prev_on_pit: false,
+            pit_tracker: PitTracker::new(),
             prev_position: None,
             prev_class_position: None,
             prev_anchor_bucket: None,
@@ -518,26 +519,11 @@ impl NarrativeEngine {
             self.record_lap_car_positions(lap, frame);
         }
 
-        // Pit transitions are detected before the unclassified-car guard below:
-        // a car in its pit stall reports position 0, so gating pit edges on a
-        // classified position swallowed every stint-opening PIT_EXIT.
-        if on_pit && !self.prev_on_pit {
-            events.push(RaceEvent::PitEntry {
-                lap,
-                session_time: t,
-                player_car_idx: frame.player_car_idx,
-                position: pos,
-                class_position: frame.player_class_position(),
-            });
-        } else if !on_pit && self.prev_on_pit {
-            events.push(RaceEvent::PitExit {
-                lap,
-                session_time: t,
-                player_car_idx: frame.player_car_idx,
-                position: pos,
-                class_position: frame.player_class_position(),
-            });
-        }
+        // Pit transitions, for every car in the field, are detected before the
+        // unclassified-car guard below: a car in its pit stall reports
+        // position 0, so gating pit edges on a classified position swallowed
+        // every stint-opening PIT_EXIT.
+        events.extend(self.pit_tracker.update(frame, self.track_length_m));
 
         // Third-party battles are tracked whatever the rig's own car is doing:
         // the field keeps racing while the rig sits in the pit stall. Pairs the
@@ -555,7 +541,6 @@ impl NarrativeEngine {
 
         if pos == 0 || lap < 1 {
             self.prev_lap = Some(lap);
-            self.prev_on_pit = on_pit;
             return events;
         }
 
@@ -1028,7 +1013,6 @@ impl NarrativeEngine {
         }
 
         self.prev_lap = Some(lap);
-        self.prev_on_pit = on_pit;
         self.prev_position = Some(pos);
         self.prev_class_position = frame.player_class_position();
         events
@@ -1717,17 +1701,28 @@ mod tests {
         in_pits.player_car_position = 0;
         in_pits.on_pit_road = true;
         let entry = engine.process_frame(&in_pits);
-        assert!(entry
+        // First seen already on pit road: no entry was witnessed.
+        assert!(!entry
             .iter()
-            .any(|e| matches!(e, RaceEvent::PitEntry { position: 0, .. })));
+            .any(|e| matches!(e, RaceEvent::PitEntry { .. })));
 
         let mut leaving = frame_no_opponent(0, 40.0);
         leaving.player_car_position = 0;
         leaving.on_pit_road = false;
-        let exit = engine.process_frame(&leaving);
-        assert!(exit
-            .iter()
-            .any(|e| matches!(e, RaceEvent::PitExit { position: 0, .. })));
+        let mut exit = engine.process_frame(&leaving);
+        // The exit is reported once pit road has stayed clear for the debounce.
+        let mut settled = frame_no_opponent(0, 40.6);
+        settled.player_car_position = 0;
+        exit.extend(engine.process_frame(&settled));
+        assert!(exit.iter().any(|e| matches!(
+            e,
+            RaceEvent::PitExit {
+                position: 0,
+                player_car_idx: Some(_),
+                from_garage: Some(true),
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -2258,7 +2253,8 @@ mod tests {
                 ..
             }
         )));
-        let exit = engine.process_frame(&solo_frame(3, 60.0, 9, 5));
+        let mut exit = engine.process_frame(&solo_frame(3, 60.0, 9, 5));
+        exit.extend(engine.process_frame(&solo_frame(3, 61.0, 9, 5)));
         assert!(exit.iter().any(|e| matches!(
             e,
             RaceEvent::PitExit {

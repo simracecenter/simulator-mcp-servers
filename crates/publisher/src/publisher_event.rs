@@ -166,7 +166,8 @@ pub enum SubjectRole {
     Driver,
     /// A car involved in an incident.
     Incident,
-    /// The car that triggered a flag condition.
+    /// The car that triggered a flag condition, or another car's pit stop
+    /// (field-wide `PIT_ENTRY` / `PIT_EXIT`).
     Trigger,
     /// The publishing rig itself — publisher lifecycle and control events.
     Rig,
@@ -309,9 +310,10 @@ fn primary_car_idx(event: &RaceEvent, player_car_idx: u8) -> u8 {
         | RaceEvent::BattleClosing {
             opponent_car_idx, ..
         } => *opponent_car_idx,
-        RaceEvent::IncidentAlert { car_idx, .. } | RaceEvent::IncidentOutcome { car_idx, .. } => {
-            *car_idx
-        }
+        RaceEvent::IncidentAlert { car_idx, .. }
+        | RaceEvent::IncidentOutcome { car_idx, .. }
+        | RaceEvent::PitEntry { car_idx, .. }
+        | RaceEvent::PitExit { car_idx, .. } => *car_idx,
         RaceEvent::FocusMeRequested { player_car_idx, .. }
         | RaceEvent::DriverApprovalAnswered { player_car_idx, .. }
         | RaceEvent::CarFinished { player_car_idx, .. } => *player_car_idx,
@@ -548,6 +550,16 @@ fn event_roles(event: &RaceEvent, frame: &TelemetryFrame) -> EventRoles {
         | RaceEvent::DriverMaterial { player_car_idx, .. }
         | RaceEvent::CarFinished { player_car_idx, .. } => {
             EventRoles::solo(*player_car_idx, SubjectRole::Driver)
+        }
+        // Pit events cover the whole field: the rig's own stop is its
+        // driving, another car's stop is that car's doing.
+        RaceEvent::PitEntry { car_idx, .. } | RaceEvent::PitExit { car_idx, .. } => {
+            let role = if *car_idx == me {
+                SubjectRole::Driver
+            } else {
+                SubjectRole::Trigger
+            };
+            EventRoles::solo(*car_idx, role)
         }
         // Everything else describes the rig's own driving: laps, pit, tires,
         // fuel, braking, micro-sectors, driver swaps.
